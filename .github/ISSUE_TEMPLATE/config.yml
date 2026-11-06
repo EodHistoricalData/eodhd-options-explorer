@@ -1,0 +1,10 @@
+blank_issues_enabled: true
+contact_links:
+  # Not /contact: eodhd.com has no contact page (it, /contact-us, /contacts and
+  # /support all answer 404 -- re-measured 2 Oct 2026). The
+  # site's own "contact" is a mailto link, and GitHub only takes http(s) here,
+  # so the link goes to the pricing page -- plans, limits and the plan FAQ, with
+  # the support address in its footer -- and the address is spelled out below.
+  - name: Questions about your EODHD plan or key
+    url: https://eodhd.com/pricing?utm_source=eodhd_oss&utm_medium=app&utm_campaign=options-explorer&utm_content=issue_template
+    about: Plan limits, billing and access to a feed are EODHD support matters, not app bugs. Write to support@eodhistoricaldata.com.

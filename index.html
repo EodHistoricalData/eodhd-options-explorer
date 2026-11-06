@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EODHD Options Explorer</title>
+
+  <!-- Inline, so there is no second file to fetch and no 404 in the console
+       of an app that is otherwise clean. A bar chart on the EODHD gradient,
+       the same mark the terminal uses. -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Cdefs%3E%3ClinearGradient%20id%3D%22g%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%3Cstop%20offset%3D%220%22%20stop-color%3D%22%23f97316%22%2F%3E%3Cstop%20offset%3D%221%22%20stop-color%3D%22%23a855f7%22%2F%3E%3C%2FlinearGradient%3E%3C%2Fdefs%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%227%22%20fill%3D%22url(%23g)%22%2F%3E%3Cg%20fill%3D%22%23fff%22%3E%3Crect%20x%3D%228%22%20y%3D%2217%22%20width%3D%224%22%20height%3D%227%22%20rx%3D%221%22%2F%3E%3Crect%20x%3D%2214%22%20y%3D%2212%22%20width%3D%224%22%20height%3D%2212%22%20rx%3D%221%22%2F%3E%3Crect%20x%3D%2220%22%20y%3D%228%22%20width%3D%224%22%20height%3D%2216%22%20rx%3D%221%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E">
+
+  <style>
+    /* Both themes are declared, so native controls -- the date picker's icon,
+       a select, a scrollbar -- are drawn in the one the page is using. Without
+       it the calendar icon in a date field was almost invisible on the dark
+       ground. The app writes data-theme on <html> when the reader chooses;
+       until then the system preference decides. */
+    :root { color-scheme: dark; }
+    html[data-theme="light"] { color-scheme: light; }
+    html, body { margin: 0; background: #0d0d12; color: #E9E6DF;
+                 font-family: 'Sora', system-ui, -apple-system, sans-serif; }
+    html[data-theme="light"], html[data-theme="light"] body { background: #F4F3EF; color: #1e1b4b; }
+    #root { min-height: 100vh; }
+    #boot-error { display: none; max-width: 34rem; margin: 18vh auto 0; padding: 0 24px;
+                  font-size: 15px; line-height: 1.6; }
+    #boot-error code { font-family: ui-monospace, monospace; font-size: 0.92em; }
+
+    /* The views draw their loading rings with animation: 'spin ...' and their
+       skeletons with 'pulse', and expect the page to define both -- the
+       terminal does, globally. Nothing here did, so every spinner in all
+       seven apps was a still ring and a slow feed read as a hung one. The
+       two definitions are the terminal's own. */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.8; } }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important; animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important; scroll-behavior: auto !important;
+      }
+    }
+
+    /* These views come from a phone, where a horizontal scroller shows no bar
+       at all. On a desktop Chrome the same markup draws a full-width light
+       trough across the middle of the page -- the screener's preset row had
+       one sitting directly under the presets, and it read as a broken
+       element rather than as a scrollbar. */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 8px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.24); }
+    * { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.14) transparent; }
+
+    /* A date field shows where the keyboard is. The views draw their own
+       ring on the text fields; the native date field had none, and here --
+       without the terminal's stylesheet -- Tab landed on it invisibly
+       (Add Position, Backtest). The terminal's orange, its light-theme step. */
+    input[type="date"]:focus-visible { outline: 2px solid #f97316; outline-offset: 2px; }
+    html[data-theme="light"] input[type="date"]:focus-visible { outline-color: #c2410c; }
+
+    /* Underlined text tabs. The views mark their tab bars with the
+       terminal's classes (.mi-tabbar, .mi-tab), and the rules for them live
+       in the terminal's stylesheet: without these, a tab bar drew as a row of
+       plain browser buttons. The terminal's rules, its colours written out
+       for each theme. */
+    :root { --mi-tab-line: #2B2820; --mi-tab-ink: #A39B89; --mi-tab-ink-on: #E9E6DF;
+            --mi-tab-hover: #3A362B; --mi-tab-accent: #c2410c; --mi-tab-ring: #f97316; }
+    html[data-theme="light"] { --mi-tab-line: #e2e4e9; --mi-tab-ink: #374151; --mi-tab-ink-on: #1e1b4b;
+            --mi-tab-hover: #d1d5db; --mi-tab-ring: #c2410c; }
+    .mi-tabbar { display: flex; align-items: stretch; gap: 4px; margin: 0; padding: 0;
+                 border-bottom: 1px solid var(--mi-tab-line); overflow-x: auto; overflow-y: hidden;
+                 flex-wrap: nowrap !important; scrollbar-width: none; }
+    .mi-tabbar::-webkit-scrollbar { display: none; }
+    .mi-tab { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center;
+              justify-content: center; min-width: 40px; min-height: 40px; margin: 0; padding: 0 12px;
+              background: none; border: 0; border-radius: 0; color: var(--mi-tab-ink);
+              font-family: inherit; font-size: 14px; font-weight: 500; line-height: 1.2;
+              white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent;
+              transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1); }
+    .mi-tab:active { transform: scale(0.97); }
+    .mi-tabbar > .mi-tab:first-child { padding-left: 0; transform-origin: left center; }
+    .mi-tab::before, .mi-tab::after { content: ''; position: absolute; left: 12px; right: 12px;
+              bottom: -1px; height: 2px; opacity: 0; pointer-events: none; }
+    .mi-tabbar > .mi-tab:first-child::before, .mi-tabbar > .mi-tab:first-child::after { left: 0; }
+    .mi-tab::before { background: var(--mi-tab-hover); transition: opacity 150ms ease; }
+    .mi-tab::after { background: var(--mi-tab-accent); }
+    @media (hover: hover) and (pointer: fine) {
+      .mi-tab:hover { color: var(--mi-tab-ink-on); }
+      .mi-tab:hover::before { opacity: 1; }
+    }
+    .mi-tab:is([aria-selected="true"], [aria-pressed="true"]) { color: var(--mi-tab-ink-on); }
+    .mi-tab:is([aria-selected="true"], [aria-pressed="true"])::after { opacity: 1; }
+    .mi-tab:is([aria-selected="true"], [aria-pressed="true"])::before { opacity: 0; }
+    .mi-tab:focus-visible { outline: 2px solid var(--mi-tab-ring) !important; outline-offset: -2px !important;
+                            border-radius: 2px; }
+
+    /* Touch: icon controls named for what they do -- Back, Close, Dismiss,
+       the per-row position and alert actions -- are 40 px on a phone or a
+       touch screen, as in the terminal. By name only: a row of tabs or a
+       chip strip is never matched. */
+    @media (max-width: 1024px), (pointer: coarse) {
+      #root .mi-touch40,
+      #root button:is([aria-label="Back"], [aria-label="Close"], [aria-label="Dismiss"],
+        [aria-label="Back to overview"], [aria-label="Edit position"], [aria-label="Position history"],
+        [aria-label="Delete position"], [aria-label="Delete alert"], [aria-label^="Delete alert for "],
+        [aria-label="Ask AI about this portfolio"], [aria-label="Add portfolio"], [aria-label="Portfolio settings"],
+        [aria-label^="Open "]),
+      #root button[title="Dismiss"] { min-width: 40px !important; min-height: 40px !important; }
+      #root a.mi-touch-link { display: inline-block; padding: 13px 0; margin: -13px 0; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- React from a CDN. It is the only runtime dependency, and it is not
+       installed: nothing in node_modules ends up in what the browser runs.
+       Pinned to a patch version and checked against a hash: a floating "@18"
+       let the CDN choose the file, and a file the browser did not verify was
+       the one script here that nobody had read. -->
+  <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"
+          integrity="sha384-DGyLxAyjq0f9SPpVevD6IgztCFlnMF6oW/XQGmfe+IsZ8TqEiDrcHkMLKI6fiB/Z"
+          crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"
+          integrity="sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1"
+          crossorigin="anonymous"></script>
+
+  <!-- If React did not arrive, say so. The page used to render white with a
+       ReferenceError in a console nobody had open, which reads as a broken
+       app rather than as a blocked CDN. -->
+  <div id="boot-error">
+    <h1 style="font-size:20px;margin:0 0 12px">React did not load</h1>
+    <p style="margin:0 0 12px">This app loads React from <code>unpkg.com</code>. The request did not
+       complete — usually a blocked CDN, an offline machine or a corporate proxy.</p>
+    <p style="margin:0">Check the network tab, then reload. Everything else runs locally.</p>
+  </div>
+  <!-- The check lives in build/app.js, as its first file (boot.js): the
+       content-security policy allows scripts from this origin and unpkg, and
+       an inline one would need either a hash or 'unsafe-inline'. Neither is
+       worth it for four lines. First, because anything after it may touch
+       React at definition time. -->
+  <script src="build/app.js"></script>
+</body>
+</html>
