@@ -225,6 +225,14 @@
     return out;
   }
 
+  // The user turn of a portfolio question, as analyzePortfolio sends it and
+  // as the terminal's AIService.portfolioQuestion builds it. The portfolio
+  // tracker's chat measures a question with this before sending it, so the
+  // length it checks is the length that goes out, portfolio and all.
+  function portfolioQuestion(holdings, holdingsData, question) {
+    return 'Here is my portfolio:\n\n' + portfolioContext(holdings, holdingsData) + '\n\nQuestion: ' + String(question || '');
+  }
+
   function eventLines(events) {
     return events.slice(0, 30).map(function (e, i) {
       var raw = e.raw || {};
@@ -379,10 +387,24 @@
       ]);
     },
 
+    // The terminal's names for the two pieces of a portfolio question. The
+    // tracker's chat reads them to size a question before it is sent; without
+    // them it measured the question alone and missed the portfolio around it.
+    portfolioQuestion: portfolioQuestion,
+    buildPortfolioContext: portfolioContext,
+
+    // The bounds the chat checks a question against before sending it, in
+    // characters. Without them it used the terminal server's (8,000 a
+    // message), and a large portfolio's question was stopped here although
+    // this app's own server would pass it. The real bound is the server's
+    // AI_BODY_LIMIT, 256 KB for the whole request: these leave room for the
+    // JSON around the text and for two-byte letters.
+    CHAT_LIMITS: { message: 60000, total: 120000 },
+
     analyzePortfolio: function (holdings, holdingsData, question) {
       return chat(null, null, [
         { role: 'system', content: 'You are a helpful financial assistant analyzing a user\'s investment portfolio. Be concise and actionable. Use data provided to give specific insights. Format responses with bullet points when listing items. Do not give specific buy/sell recommendations, but you can discuss general strategy.' },
-        { role: 'user', content: 'Here is my portfolio:\n\n' + portfolioContext(holdings, holdingsData) + '\n\nQuestion: ' + String(question || '') },
+        { role: 'user', content: portfolioQuestion(holdings, holdingsData, question) },
       ]);
     },
 

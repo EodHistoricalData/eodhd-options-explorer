@@ -364,13 +364,17 @@
         const exchange = t.listing.slice(d + 1);
         const suffix = q.slice(q.lastIndexOf('.') + 1);
         const yahoo = q.charAt(0) !== '^' && q.indexOf('.') !== -1 && !!(YAHOO[suffix] || UNLISTED[suffix]);
-        // TSE and NZ (NO_PRICES): the search lists nothing there, so the code
-        // alone, as for Yahoo's suffixes -- search/AIR.NZ was a request for
-        // a listing the search never has.
+        // TSE and NZ (NO_PRICES), Yahoo's ".T" included, ask for what was
+        // typed: search/AIR.NZ lists Air New Zealand's other listings
+        // (AIZ.AU, BZU.F), while search/AIR answered Airbus and AAR Corp
+        // and search/7203 an unrelated
+        // 7203.KLSE (search/7203.T and search/7203.TSE list nothing). The
+        // check of the listing is still not asked: listed() asks nothing for
+        // them (NO_PRICES, not SEARCHED), and noteSearch keeps nothing.
         const priceless = NO_PRICES.indexOf(exchange) !== -1;
+        const search = priceless ? typed : yahoo ? code : (q.charAt(0) === '^' ? q : typed);
         const out = {
-          kind: exchange === 'INDX' ? 'index' : 'listing', symbol: t.listing, code, exchange,
-          search: yahoo || priceless ? code : (q.charAt(0) === '^' ? q : typed),
+          kind: exchange === 'INDX' ? 'index' : 'listing', symbol: t.listing, code, exchange, search,
         };
         // On a market EODHD does not list: no listing, whatever is asked.
         if (t.unlisted) out.unlisted = true;

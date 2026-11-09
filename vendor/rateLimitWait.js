@@ -269,10 +269,14 @@ window.RateLimitWait = (function () {
   // with 200, JSON of another shape. It is its own failure: with no status
   // it read "EODHD did not answer, or the connection dropped",
   // which sent people to check a connection that was fine.
+  // The EODHD client (the Mini App's path with its own key) says the same of
+  // a page of HTML with 200 as code "parse_error", statusCode 200: read as a
+  // plain 200 it was no failure at all, and the GBX/USD rate it left out
+  // was named with no reason.
   function failure(err) {
     var o = err && typeof err === 'object' ? err : null;
     var st = o ? (Number(o.upstreamStatus) || Number(o.status) || Number(o.statusCode) || 0) : 0;
-    var unreadable = Boolean(o && o.unreadable);
+    var unreadable = Boolean(o && (o.unreadable || o.code === 'parse_error'));
     var limited = o
       ? Boolean(o.rateLimited || st === 429 || o.name === 'EODHDRateLimitError' || (!st && !unreadable && until()))
       : Boolean(until());

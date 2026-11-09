@@ -197,13 +197,20 @@ window.HelpTooltip = ({ title, text, isDark }) => {
   },
     React.createElement('button', {
       ref: btnRef,
+      // With a mouse the icon is 19 x 19: an invisible 24 px hit area.
+      'data-hit': '',
       onClick: (e) => { e.stopPropagation(); setOpen(!open); },
       // Touch: a 40x40 hit area around the 15 px icon, with the extra taken
       // back by a negative margin so the header layout does not move (it was
       // a 19x19 target). Opacity raised for contrast.
+      // It takes 23 px of its row's height, not 19: between a
+      // label and the field under it (the screener's filters, 37 px from
+      // field to field) the 40 px reached 3-4 px into both fields, and a tap
+      // at a field's edge opened the help. It reaches
+      // 11 px above its row and 6 below, where a field follows closest.
       style: {
         background: 'none', border: 'none', cursor: 'pointer',
-        padding: coarsePointer ? 12.5 : 2, margin: coarsePointer ? -10.5 : 0,
+        padding: coarsePointer ? 12.5 : 2, margin: coarsePointer ? '-11px -10.5px -6px' : 0,
         // Full opacity: at 0.75 the icon read 2.65-3.0:1 in light; the grey itself is the muted tone, hover darkens it.
         display: 'flex', alignItems: 'center',
         transition: 'filter 0.15s',

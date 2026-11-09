@@ -16,7 +16,7 @@ window.optionMoneynessLabel = (otmPct) => {
   return Math.abs(otmPct) + '% ' + (otmPct > 0 ? 'OTM' : 'ITM');
 };
 
-window.UnusualActivityScanner = ({ optionsData, currentPrice, isDark, apiKey }) => {
+window.UnusualActivityScanner = ({ optionsData, currentPrice, isDark, apiKey, onRetry }) => {
   // The prices of this screen's AI actions, from the server's list.
   const useFeatureCost = (() => null);
   const whyCost = useFeatureCost('options_ai_unusual');
@@ -29,6 +29,9 @@ window.UnusualActivityScanner = ({ optionsData, currentPrice, isDark, apiKey }) 
   const [aiLoading, setAiLoading] = useState(false);
   const [selectedAnomaly, setSelectedAnomaly] = useState(null);
 
+  // What a later page of the chain failed with, as a failure kept once per
+  // chain (RateLimitWait.failure), or null when every page answered.
+  const partFail = useMemo(() => (optionsData && optionsData.partFail && window.RateLimitWait ? window.RateLimitWait.failure(optionsData.partFail) : null), [optionsData]);
   const spotPrice = useMemo(() => {
     if (currentPrice) return currentPrice;
     if (!optionsData?.data?.[0]?.options) return 0;
@@ -261,12 +264,22 @@ Keep it concise (120 words). Use **bold** for key terms.`;
       )
     ),
 
+    // Part of the chain did not load (a later page at 500, the limit, an
+    // answer that could not be read): said with its reason and Try again,
+    // above the activity found in what did load -- and never "No Unusual
+    // Activity Detected", which is a statement about the whole chain.
+    partFail && React.createElement(window.RateLimitWait.FailNote, {
+      what: 'Part of the options chain', failure: partFail, onRetry, isDark, panel: 'options-unusual',
+      extra: filtered.length ? 'The activity below is from the contracts that loaded.' : null,
+      style: { ...cardStyle, marginBottom: '12px' },
+    }),
+
     // Results table
     filtered.length === 0
-      ? React.createElement('div', { style: { ...cardStyle, textAlign: 'center', padding: '40px 16px' } },
+      ? (partFail ? null : React.createElement('div', { style: { ...cardStyle, textAlign: 'center', padding: '40px 16px' } },
           React.createElement('div', { style: { fontSize: '16px', fontWeight: '700', marginBottom: '8px' } }, 'No Unusual Activity Detected'),
           React.createElement('div', { style: { fontSize: '13px', opacity: 0.7 } }, 'All options are trading within normal volume ranges for this ticker.')
-        )
+        ))
       : React.createElement('div', { style: { ...cardStyle, padding: '0', overflow: 'hidden' } },
           React.createElement('div', { style: { overflowX: 'auto' } },
             React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse', fontSize: '12px', minWidth: '700px' } },

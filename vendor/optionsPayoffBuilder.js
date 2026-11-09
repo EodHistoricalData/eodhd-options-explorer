@@ -641,7 +641,10 @@ window.PayoffBuilder = ({ optionsData, currentPrice, isDark, apiKey }) => {
       if (!aiService?.getSettings()?.enabled) { setAiResult({ error: 'AI analysis is off. Add OPENAI_API_KEY to .env and restart to enable it.' }); setAiLoading(false); return; }
       const settings = aiService.getSettings();
       // The envelope carries `code`, not `symbol`: every prompt said "a stock".
-      const ticker = (window.OptionsDeepLink ? window.OptionsDeepLink.tickerOf(optionsData) : optionsData?.code) || 'a stock';
+      // Without the exchange (AAPL, as the AI Advisor writes it): options_ai_strategy
+      // is a typed question to the server (the Advisor's "Ask about" box), and
+      // a written-out AAPL.US would be read as an instrument the user asked about.
+      const ticker = String((window.OptionsDeepLink ? window.OptionsDeepLink.tickerOf(optionsData) : optionsData?.code) || 'a stock').split('.')[0];
       const legsDesc = legs.map(l => `${l.action.toUpperCase()} ${l.quantity}x ${l.type} @ $${l.strike} (premium $${l.premium})`).join(', ');
       let prompt;
       if (type === 'explain') {

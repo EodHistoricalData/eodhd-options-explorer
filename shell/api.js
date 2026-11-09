@@ -137,8 +137,38 @@
   function get(segments, params, opts) {
     return answerOf(segments, params, opts).then(function (answer) {
       if (!answer || !answer.ok) return null;
-      try { return JSON.parse(answer.body); } catch (_) { return null; }
+      var d;
+      try { d = JSON.parse(answer.body); } catch (_) { return null; }
+      return notData(d) ? null : d;
     });
+  }
+
+  /**
+   * A 200 that carries no data: a body that is a message and nothing else
+   * -- {"message": "temporarily unavailable"} -- is an answer that could
+   * not be read, the same as an HTML page with 200. Read as data it was a
+   * quote of "NA", a rate that was not there, a day with no close, "no
+   * insider transactions". RateLimitWait.notData's rule, the
+   * terminal's: every key one of a message's, so a real answer that also
+   * has a `message` field is still an answer. `shape` adds what the
+   * endpoint's answer must be, as the terminal's client checks it: 'quote'
+   * (a quote, or a list of them), 'list' (rows that are objects, none a
+   * bare message), 'object' (fundamentals).
+   */
+  var MESSAGE_KEYS = { message: 1, status: 1, statusCode: 1, success: 1, detail: 1 };
+  function notData(body, shape) {
+    var plain = body && typeof body === 'object' && !Array.isArray(body);
+    var message = function (x) {
+      if (!x || typeof x !== 'object' || Array.isArray(x)) return false;
+      if (x.unreadable === true) return true;
+      if (typeof x.message !== 'string') return false;
+      return Object.keys(x).every(function (k) { return MESSAGE_KEYS[k] === 1; });
+    };
+    if (message(body)) return true;
+    if (shape === 'quote') return !(Array.isArray(body) || (plain && (body.code != null || body.close != null || body.timestamp != null)));
+    if (shape === 'list') return !(Array.isArray(body) && body.every(function (x) { return x && typeof x === 'object' && !Array.isArray(x) && !message(x); }));
+    if (shape === 'object') return !plain;
+    return false;
   }
 
   /**
@@ -149,12 +179,17 @@
    * plan and the limit all read "did not load -- EODHD did not answer".
    * `what` names the request in the message.
    */
-  function getOrStatus(segments, params, what) {
+  // `shape`: what the answer must be (notData); a body of another shape is
+  // unreadable too, with its status.
+  function getOrStatus(segments, params, what, shape) {
     var failed = function (message, status) { var e = new Error(message); e.status = status; return e; };
     return answerOf(segments, params).then(function (answer) {
       if (!answer) throw failed(what + ' did not answer', 0);
       if (!answer.ok) throw failed(what + ' answered ' + answer.status, answer.status);
-      try { return JSON.parse(answer.body); } catch (_) { throw unreadable(what + ' answered something unreadable', answer.status); }
+      var d;
+      try { d = JSON.parse(answer.body); } catch (_) { throw unreadable(what + ' answered something unreadable', answer.status); }
+      if (notData(d, shape)) throw unreadable(what + ' answered something unreadable', answer.status);
+      return d;
     });
   }
 
@@ -463,7 +498,10 @@
           failed.status = res.status;
           throw failed;
         }
-        try { return JSON.parse(body); } catch (_) { throw unreadable('Invalid response from API', res.status); }
+        var d;
+        try { d = JSON.parse(body); } catch (_) { throw unreadable('Invalid response from API', res.status); }
+        if (notData(d)) throw unreadable('Invalid response from API', res.status);
+        return d;
       });
     }, function (err) {
       clear();
@@ -492,7 +530,9 @@
       return answerOf(segments, params).then(function (answer) {
         if (!answer) return { notServed: {} };
         if (!answer.ok) return { notServed: { status: answer.status } };
-        try { return JSON.parse(answer.body); } catch (_) { return { notServed: { status: answer.status, unreadable: true } }; }
+        var d;
+        try { d = JSON.parse(answer.body); } catch (_) { return { notServed: { status: answer.status, unreadable: true } }; }
+        return notData(d) ? { notServed: { status: answer.status, unreadable: true } } : d;
       });
     },
 
@@ -570,7 +610,9 @@
       // Anything else as get() answers it.
       return answerOf(['mp', 'unicornbay', 'spglobal', 'comp', symbol], null, known ? undefined : { softDenial: true }).then(function (answer) {
         if (!answer || !answer.ok) return null;
-        try { return JSON.parse(answer.body); } catch (_) { return { error: 'unreadable', unreadable: true }; }
+        var d;
+        try { d = JSON.parse(answer.body); } catch (_) { return { error: 'unreadable', unreadable: true }; }
+        return notData(d) ? { error: 'unreadable', unreadable: true } : d;
       });
     },
     // opts.throwErrors: a failure throws with its status, as the terminal's
@@ -582,7 +624,7 @@
     // keeps using at the limit. The open apps keep none: null.
     lastQuote: function () { return null; },
     getRealTimeData: function (_k, symbol, opts) {
-      if (opts && opts.throwErrors) return getOrStatus(['real-time', symbol], null, 'The quote');
+      if (opts && opts.throwErrors) return getOrStatus(['real-time', symbol], null, 'The quote', 'quote');
       return get(['real-time', symbol]);
     },
     // throwErrors: the sentiment view tells "no such ticker" from "the
@@ -649,7 +691,10 @@
       return answerOf(['sentiments'], params).then(function (answer) {
         if (!answer) throw failed('The sentiment request did not answer', 0);
         if (!answer.ok) throw failed('The sentiment request answered ' + answer.status, answer.status);
-        try { return JSON.parse(answer.body); } catch (_) { throw unreadable('The sentiment request answered something unreadable', answer.status); }
+        var d;
+        try { d = JSON.parse(answer.body); } catch (_) { throw unreadable('The sentiment request answered something unreadable', answer.status); }
+        if (notData(d)) throw unreadable('The sentiment request answered something unreadable', answer.status);
+        return d;
       });
     },
 
@@ -701,8 +746,19 @@
       if (!list.length) return Promise.resolve({});
       var chunks = [];
       for (var i = 0; i < list.length; i += 100) chunks.push(list.slice(i, i + 100));
+      // What failed, when nothing came (`_failed`, not enumerable), as
+      // getBatchRealTime says it: the heatmap's Pre-Market read a 500 as
+      // "no pre-market quotes available".
+      var whys = [];
       return Promise.all(chunks.map(function (chunk) {
-        return get(['us-quote-delayed'], { s: chunk.join(',') });
+        return answerOf(['us-quote-delayed'], { s: chunk.join(',') }).then(function (answer) {
+          if (!answer) { whys.push({ status: 0 }); return null; }
+          if (!answer.ok) { whys.push({ status: answer.status }); return null; }
+          var d;
+          try { d = JSON.parse(answer.body); } catch (_) { whys.push({ status: answer.status, unreadable: true }); return null; }
+          if (notData(d)) { whys.push({ status: answer.status, unreadable: true }); return null; }
+          return d;
+        });
       })).then(function (bodies) {
         var out = {};
         bodies.forEach(function (body) {
@@ -724,6 +780,7 @@
             out[code] = q;
           });
         });
+        if (!Object.keys(out).length && whys.length) Object.defineProperty(out, '_failed', { value: whys[0], enumerable: false });
         return out;
       });
     },
@@ -734,7 +791,7 @@
     // opts.throwErrors (the terminal's signature): a failure throws with its
     // status, an unparsable body as unreadable.
     getFundamentals: function (_k, symbol, opts) {
-      if (opts && opts.throwErrors) return getOrStatus(['v1.1', 'fundamentals', symbol], null, 'The fundamentals').then(stripMorningstar);
+      if (opts && opts.throwErrors) return getOrStatus(['v1.1', 'fundamentals', symbol], null, 'The fundamentals', 'object').then(stripMorningstar);
       return get(['v1.1', 'fundamentals', symbol]).then(stripMorningstar);
     },
 
@@ -836,7 +893,7 @@
         none.status = 404;
         return Promise.reject(none);
       }
-      return getOrStatus(['eod', symbol], p, 'The price history request');
+      return getOrStatus(['eod', symbol], p, 'The price history request', 'list');
     },
     // opts.throwErrors: a failure throws with its status (the terminal's
     // signature). Macro read a 500 as "EODHD did not answer" under the
@@ -849,6 +906,10 @@
     // replaced the old insider-transactions endpoint, which returned [] or rows
     // frozen at 2026-04-24. US issuers only; the raw payload is returned and
     // InsiderTx flattens it. Same signature as the terminal's.
+    // opts.throwErrors: a failure throws with its status, a body that is not
+    // the filings (an HTML page, {"message"}) as unreadable. Dropped here,
+    // a 500, a 429 or a page with 200 read "No recent insider transactions"
+    // on Portfolio Health, with no Try again.
     getInsiderForm4: function (_k, symbol, opts) {
       var o = opts || {};
       var offset = Number.isFinite(o.offset) ? o.offset : 0;
@@ -856,7 +917,9 @@
       var sym = String(symbol || '').toUpperCase().trim();
       if (!sym) return Promise.resolve(null);
       if (sym.indexOf('.') === -1) sym = sym + '.US';
-      return get(['sec-filings', sym, 'form4'], { 'page[offset]': offset, 'page[limit]': limit });
+      var params = { 'page[offset]': offset, 'page[limit]': limit };
+      if (o.throwErrors) return getOrStatus(['sec-filings', sym, 'form4'], params, 'The insider filings');
+      return get(['sec-filings', sym, 'form4'], params);
     },
 
     /**
@@ -872,7 +935,7 @@
     getForexRate: function (_k, from, to, _noCross, fails) {
       if (from === to) return Promise.resolve(1);
       var collect = Array.isArray(fails);
-      var asked = collect ? getOrStatus(['real-time', from + to + '.FOREX'], null, 'The rate') : get(['real-time', from + to + '.FOREX']);
+      var asked = collect ? getOrStatus(['real-time', from + to + '.FOREX'], null, 'The rate', 'quote') : get(['real-time', from + to + '.FOREX']);
       return asked
         .then(function (d) { return (d && d.close) || null; })
         .catch(function (e) { if (collect) fails.push(e || {}); return null; });

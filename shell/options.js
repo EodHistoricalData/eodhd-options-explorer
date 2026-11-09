@@ -330,12 +330,14 @@
     promise.then(function (env) {
       var failed = !env || Boolean(env.notServed);
       var empty = !failed && !(env.data && env.data.length);
-      if (failed || empty) delete chainCache[cacheKey];
+      // Part of it not served (partFail): shown, not kept, so Try again asks.
+      var partial = !failed && Boolean(env.partFail);
+      if (failed || empty || partial) delete chainCache[cacheKey];
       if (failed) {
         if (window.Entitlement && window.Entitlement.get('options').allowed === false) refusedChains[underlying] = true;
       } else {
         Object.keys(refusedChains).forEach(function (k) { delete refusedChains[k]; });
-        if (!empty) writeStoredChain(cacheKey, env);
+        if (!empty && !partial) writeStoredChain(cacheKey, env);
       }
     }, function () { delete chainCache[cacheKey]; });
     return promise;
@@ -464,6 +466,15 @@
       // to. A page that was not served leaves it unknown, which is "no".
       var whole = bodies.every(listed)
         && pagesData[pagesData.length - 1].length < OPTIONS_PAGE_SIZE;
+      // A later page that was not served, and why (`partFail`, as
+      // notServed): the rows are part of the chain. Unusual Activity read
+      // the part as the whole, "No Unusual Activity Detected", with a page
+      // at 500. Not kept either: Try again asks again.
+      var brokenAt = -1;
+      for (var bi = 0; bi < bodies.length && brokenAt === -1; bi++) if (!listed(bodies[bi])) brokenAt = bi;
+      var partFail = brokenAt === -1 ? null
+        : (served(bodies[brokenAt]) ? { status: 200, unreadable: true } : (bodies[brokenAt] && bodies[brokenAt].notServed) || {});
+      var mark = function (env) { if (partFail) env.partFail = partFail; return env; };
       var rows = [];
       pagesData.forEach(function (batch) { rows.push.apply(rows, batch); });
 
@@ -484,14 +495,22 @@
       // so only the straddling ones, and the last one of a chain that was cut
       // mid-expiry, are fetched again whole, one request each, in parallel.
       var redo = expiriesToRefetch(pagesData, cut);
-      if (!redo.length) return Object.assign(optionsEnvelope(symbol, rows), { complete: whole });
+      if (!redo.length) return mark(Object.assign(optionsEnvelope(symbol, rows), { complete: whole }));
       return Promise.all(redo.map(function (date) {
         return API.getOptionsExpiry(null, symbol, date).then(function (entry) {
           return { date: date, entry: entry };
         }, function () { return { date: date, entry: null }; });
       })).then(function (filled) {
-        var envelope = Object.assign(optionsEnvelope(symbol, rows), { complete: whole });
+        var envelope = mark(Object.assign(optionsEnvelope(symbol, rows), { complete: whole }));
         filled.forEach(function (f) {
+          // A refetch that was not served leaves its expiry out: the chain is
+          // partial, with why, and not kept. It read as a whole chain, the
+          // expiry empty, and was cached for a quarter of an hour.
+          var missed = !f.entry || f.entry.notServed;
+          if (missed) {
+            envelope.complete = false;
+            if (!envelope.partFail) envelope.partFail = (f.entry && f.entry.notServed) || {};
+          }
           var complete = f.entry && ((f.entry.options.CALL || []).length + (f.entry.options.PUT || []).length);
           envelope.data = envelope.data.map(function (d) {
             if (d.expirationDate !== f.date) return d;

@@ -1258,7 +1258,7 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
         <div style={{ marginBottom: '16px' }}>
           {/* A tap anywhere on the frame focuses the field: the field is 21 px
               of a 55 px frame, and a tap above or below it did nothing. */}
-          <div ref={optExpSearchRef} data-field-frame=""
+          <div ref={optExpSearchRef} data-field-frame="" data-field-card=""
             onMouseDown={(e) => { if (!e.target.closest('input, button, a, [role="option"], [role="listbox"]')) e.preventDefault(); }}
             onClick={(e) => {
               if (e.target.closest('input, button, a, [role="option"], [role="listbox"]')) return;
@@ -1583,7 +1583,10 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
               {optionsTab === 'calculator' && React.createElement(window.OptionsCalculator, { optionsData, currentPrice, isDark, apiKey })}
               {optionsTab === 'payoff' && React.createElement(window.PayoffBuilder, { optionsData, currentPrice, isDark, apiKey })}
               {optionsTab === 'gex' && React.createElement(window.GEXDashboard, { optionsData, currentPrice, isDark, apiKey })}
-              {optionsTab === 'unusual' && React.createElement(window.UnusualActivityScanner, { optionsData, currentPrice, isDark, apiKey })}
+              {/* onRetry: part of the chain that did not load is asked for
+                  again from there (optionsData.partFail). */}
+              {optionsTab === 'unusual' && React.createElement(window.UnusualActivityScanner, { optionsData, currentPrice, isDark, apiKey,
+                onRetry: selectedSymbol ? () => { retryFocusRef.current = true; selectTicker(selectedSymbol.symbol, selectedSymbol.name); } : null })}
               {optionsTab === 'iv' && React.createElement(window.IVSurfaceView, { optionsData, currentPrice, isDark, apiKey })}
             </div>
           )

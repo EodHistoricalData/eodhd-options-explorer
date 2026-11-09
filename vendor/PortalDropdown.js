@@ -896,7 +896,7 @@ window.ModalLayer = window.ModalLayer || (() => {
     const all = [...root.querySelectorAll(TABBABLE)].filter(el => {
       const ti = el.getAttribute('tabindex');
       if (ti != null && ti !== '' && Number(ti) < 0) return false;
-      if (el.closest('fieldset[disabled]')) return false;
+      if (el.closest('fieldset[disabled]') || el.hasAttribute('data-tab-guard')) return false;
       return shown(el);
     });
     const active = document.activeElement;
@@ -907,27 +907,106 @@ window.ModalLayer = window.ModalLayer || (() => {
       return pick === el;
     });
   };
-  // Tab inside `roots` (the window, then the popups it owns). Always moves
-  // the focus itself; the browser's own Tab never runs.
+  // The stop after `from` in `items` (before it with `back`), round the end.
+  const step = (items, roots, from, back) => {
+    const n = items.length;
+    const i = items.indexOf(from);
+    if (i !== -1) return items[(i + (back ? n - 1 : 1)) % n];
+    if (from && roots.some(r => r.contains(from))) {
+      // On the window itself, or on a control out of the tab order: the
+      // next stop after it in the page, or the one before.
+      const after = (el) => !!(from.compareDocumentPosition(el) & 4);
+      if (back) { const before = items.filter(el => !after(el) && !el.contains(from)); return before[before.length - 1] || items[n - 1]; }
+      return items.find(after) || items[0];
+    }
+    return back ? items[n - 1] : items[0];
+  };
+  // A field whose parts the browser walks with Tab: mm / dd / yyyy and the
+  // calendar button of a date. Taking every Tab over in it stopped that walk:
+  // "1 Tab 5 Tab 2025" in Add Transaction's date went on into Shares and
+  // Price (Shares 105, Price 1502025). Where the browser has no such field it
+  // reports type "text", and the trap moves on from it as from any field.
+  const PARTS = /^(date|time|month|week|datetime-local)$/;
+  const walksParts = (el) => !!el && el.nodeType === 1 && el.tagName === 'INPUT' && PARTS.test(el.type);
+  // The browser's own Tab, from `from`, checked where it lands: on `from`
+  // again (the next part of the same field) or on `want` (the window's next
+  // stop) it stays; anywhere else the focus goes to `want`. With `guarded`,
+  // a focusable guard is put right next to `from` on the side the press
+  // goes, so that leaving the field lands on the guard and never on the page
+  // behind or the browser's toolbar, whatever the browser skips. The guard
+  // goes with the next focus move, the key's release, or half a second.
+  // Only the move this Tab makes is watched: a press of the pointer, another
+  // key, or a window opening or closing ends it at once. A click on Price
+  // with the key still down in Add Transaction's date was sent to Shares,
+  // and a question opened over the window lost its focus to the one below.
+  // Tab into a field with text selects that text in every browser, so what
+  // is typed next replaces it. focus() alone leaves the caret at the end:
+  // in Safari, whose Tab leaves a date at once, "1 Tab 5 Tab 2025" in Add
+  // Transaction made Shares 105 and Price 1502025. Every move this trap
+  // makes for a Tab lands the way the browser's own Tab does.
+  const TEXTY = /^(text|search|url|tel|password|email|number)$/;
+  const land = (el) => {
+    try { el.focus(); } catch (_) { return; /* gone */ }
+    if (el.tagName === 'INPUT' && TEXTY.test(el.type) && document.activeElement === el) {
+      try { el.select(); } catch (_) { /* a type without a selection */ }
+    }
+  };
+  let pending = null;
+  const POINTER = ['pointerdown', 'mousedown', 'touchstart'];
+  const MODIFIER = /^(Shift|Control|Alt|Meta|CapsLock|AltGraph|OS)$/;
+  const release = () => {
+    if (!pending) return;
+    const p = pending;
+    pending = null;
+    clearTimeout(p.timer);
+    document.removeEventListener('focusin', p.onIn, true);
+    document.removeEventListener('keyup', p.onUp, true);
+    document.removeEventListener('keydown', p.onKey, true);
+    for (const t of POINTER) document.removeEventListener(t, release, true);
+    if (p.guard && p.guard.parentNode) p.guard.parentNode.removeChild(p.guard);
+  };
+  const native = (e, from, want, guarded) => {
+    release();
+    let guard = null;
+    if (guarded) {
+      guard = document.createElement('span');
+      guard.tabIndex = 0;
+      guard.setAttribute('data-tab-guard', '');
+      // Out of the layout, where the field is: focusing it scrolls nothing.
+      guard.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none';
+      from.parentNode.insertBefore(guard, e.shiftKey ? from : from.nextSibling);
+    }
+    const onIn = (ev) => {
+      if (ev.target === from) return;
+      release();
+      if (ev.target !== want) land(want);
+    };
+    const onUp = (ev) => { if (ev.key === 'Tab') setTimeout(release, 0); };
+    // A held Tab repeats its keydown: that is this trap's again, not another key.
+    const onKey = (ev) => { if (ev.key !== 'Tab' && !MODIFIER.test(ev.key || '')) release(); };
+    pending = { guard, onIn, onUp, onKey, timer: setTimeout(release, 500) };
+    document.addEventListener('focusin', onIn, true);
+    document.addEventListener('keyup', onUp, true);
+    document.addEventListener('keydown', onKey, true);
+    for (const t of POINTER) document.addEventListener(t, release, true);
+  };
+  // Tab inside `roots` (the window, then the popups it owns): the focus goes
+  // to the window's next (previous) stop, and the browser's own Tab never
+  // runs -- Safari skips buttons with it -- except in a field
+  // whose parts the browser walks, and back onto one, where the browser's
+  // Shift+Tab lands on its last part (focus() would land on its first).
   const tab = (e, roots) => {
     const list = (roots || []).filter(Boolean);
     if (!list.length) return;
     const items = [].concat(...list.map(tabbables));
-    e.preventDefault();
-    if (!items.length) { try { list[0].focus(); } catch (_) {} return; }
+    if (!items.length) { e.preventDefault(); try { list[0].focus(); } catch (_) {} return; }
     const active = document.activeElement;
-    const n = items.length;
-    let i = items.indexOf(active);
-    let next;
-    if (i !== -1) next = items[(i + (e.shiftKey ? n - 1 : 1)) % n];
-    else if (active && list.some(r => r.contains(active))) {
-      // On the window itself, or on a control out of the tab order: the
-      // next stop after it in the page, or the one before.
-      const after = (el) => !!(active.compareDocumentPosition(el) & 4);
-      if (e.shiftKey) { const before = items.filter(el => !after(el) && !el.contains(active)); next = before[before.length - 1] || items[n - 1]; }
-      else next = items.find(after) || items[0];
-    } else next = e.shiftKey ? items[n - 1] : items[0];
-    try { next.focus(); } catch (_) { /* gone */ }
+    const want = step(items, list, active, e.shiftKey);
+    const inField = walksParts(active) && !!active.parentNode && list.some(r => r.contains(active));
+    const backOnto = e.shiftKey && walksParts(want) && !!active && active !== want && list.some(r => r.contains(active)) && !!(active.compareDocumentPosition(want) & 2);
+    if (inField || backOnto) { native(e, active, want, !backOnto); return; }
+    e.preventDefault();
+    land(want);
   };
 
   // The page pinned where it is, once however many windows are open.
@@ -1038,10 +1117,13 @@ window.ModalLayer = window.ModalLayer || (() => {
   };
   const open = (node, opts) => {
     const pinned = !(opts && opts.scroll === false);
+    // A Tab still watched belongs to the window below: the new one's focus is its own.
+    release();
     const entry = { node, popups: opts && opts.popups, unfix: pinned ? toScreen(node) : () => {}, unlock: pinned ? lock() : () => {} };
     stack.push(entry);
     if (stack.length === 1) document.addEventListener('keydown', onKey);
     return () => {
+      release();
       const i = stack.indexOf(entry);
       if (i !== -1) stack.splice(i, 1);
       if (!stack.length) document.removeEventListener('keydown', onKey);
@@ -1124,6 +1206,11 @@ window.PTDialog = window.PTDialog || (() => {
   let pressed = null;
   const notePress = (e) => {
     const t = e && e.target && e.target.nodeType === 1 && e.target.closest ? e.target.closest(OPENER) : null;
+    // A hidden control a button clicks for the user (Restore from Backup's
+    // file input) is no opener: the focus cannot go back to it, and it went
+    // to <body> after Cancel on the restore question.
+    // The button pressed before it stays the opener.
+    if (t && !visible(t)) return;
     pressed = t ? { el: t, at: Date.now() } : null;
   };
   if (typeof document !== 'undefined' && document.addEventListener) {
@@ -1343,9 +1430,29 @@ window.TickerFieldProps = window.TickerFieldProps || Object.freeze({ autoCapital
     '  [data-field-row] { flex-wrap: wrap; }',
     '  [data-field-row] > [data-field-floor] { flex-basis: var(--field-floor, 12em) !important; }',
     '}',
+    '/* A field that has its line to itself and still cuts its hint at 16 px',
+    '   on the narrowest phones ("Ticker, e.g. AAPL, GOOG" in the open',
+    '   Sentiment app, "Search ticker, e.g. AAPL" in the options explorer, at',
+    '   320): the card around it ([data-field-card]) and a field with wide',
+    '   padding of its own ([data-field-snug]) give up some of their side',
+    '   padding there, so the hint keeps its words. Wider screens and desktop',
+    '   unchanged. */',
+    '@media (hover: none) and (pointer: coarse) and (max-width: 360px) {',
+    '  [data-field-snug] { padding-left: 8px !important; padding-right: 8px !important; }',
+    '  [data-field-card] { padding-left: 8px !important; padding-right: 8px !important; }',
+    '}',
     '[data-hit] { position: relative; }',
     '[data-hit]::after { content: ""; position: absolute; left: 50%; top: 50%; width: 100%; height: 100%; min-width: 24px; min-height: 24px; transform: translate(-50%, -50%); }',
     '[data-hit="44"]::after { min-width: 44px; min-height: 44px; }',
+    '/* Grown to one side only, where a centred area would reach over the text',
+    '   of something else: "end" for a control after its label (a chip\'s',
+    '   Remove x took the ticker\'s last letter), "start" for one before it,',
+    '   "up" for one above a line of text (a watchlist row\'s ticker over its',
+    '   company name), "down" for one below it. */',
+    '[data-hit~="end"]::after { left: 0; transform: translateY(-50%); }',
+    '[data-hit~="start"]::after { left: auto; right: 0; transform: translateY(-50%); }',
+    '[data-hit~="up"]::after { top: auto; bottom: 0; transform: translateX(-50%); }',
+    '[data-hit~="down"]::after { top: 0; transform: translateX(-50%); }',
     '[data-field-frame] { cursor: text; }',
   ].join('\n');
   const put = () => {
