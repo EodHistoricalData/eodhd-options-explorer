@@ -1026,5 +1026,10 @@
     // Branched on by some modules. There is no demo here and exactly one path.
     isDemo: function () { return false; },
     needsProxy: function () { return true; },
+
+    // Asked, guarded, by the portfolio tracker about an answer the terminal's
+    // own server cut short. Nothing is cut here: the key's plan answers in
+    // full or refuses with a 403 (shell/shims.js).
+    freeLimitedOf: function () { return null; },
   };
 })();

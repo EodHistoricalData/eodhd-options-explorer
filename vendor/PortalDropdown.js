@@ -152,7 +152,13 @@
   //   stays closed while it shows: it opened over the line and hid it.
   //   kb.active: the row to paint (the arrows' row, else the one under the
   //   mouse); kb.target: the row Enter takes, the arrows' only (-1: none).
-  const useComboboxKeys = ({ items, open, onPick, listId, query, codeOf, isDark, answered, resolve }) => {
+  //   search(query): the screen's own search, asked again for the text
+  //   still in the field once a wait of the per-minute limit is over.
+  //   kb.say(text, { error }): the line for a search that failed (`error`:
+  //   what it threw). At the limit, with `search`, the line names the limit
+  //   and a Try again under it counts the wait down; the search is asked
+  //   again by itself once the wait is over, nothing is sent inside it.
+  const useComboboxKeys = ({ items, open, onPick, listId, query, codeOf, isDark, answered, resolve, search }) => {
     // The row the arrow keys are on: the only row Enter takes. The mouse
     // only paints (hover). onMouseEnter made the row under a resting pointer
     // the Enter target: "FOO.L" + Enter with the list opening under the
@@ -166,23 +172,66 @@
     // list open with no word. The sentence itself, so a
     // screen can say why ("GSPC.INDX is an index ...").
     const [noListing, setNoListing] = React.useState(null);
-    React.useEffect(() => { setNoListing(null); }, [query]);
-    const sayNone = (q) => { const t = String(q == null ? '' : q).trim(); if (t) setNoListing('No listing found for ' + t); };
+    // The limit stopped the search for this text, or Enter's check of it:
+    // { failure, query, redo }. The line said "Try again in 20 s" with the
+    // number fixed when it was written, no button, and the search was never
+    // asked again: the list stayed empty after the wait. `redo`: what is
+    // asked again once the wait is over -- what the limit stopped: Enter's
+    // check (a one-letter code is never searched, so asking the search again
+    // did nothing for "F"), the screen's own action (What-If's Add), or,
+    // with none, the search for the text in the field.
+    const [limited, setLimited] = React.useState(null);
+    const limitedRef = React.useRef(null);
+    limitedRef.current = limited;
+    React.useEffect(() => { setNoListing(null); setLimited(null); }, [query]);
     const queryRef = React.useRef(query);
     queryRef.current = query;
+    const searchRef = React.useRef(search);
+    searchRef.current = search;
+    const RLW = window.RateLimitWait;
+    const SC = window.SymbolCode;
+    // The line under the field; `limit` (failure()) when the limit is why
+    // and the wait can be counted down and asked again here.
+    const tell = (text, limit, redo) => {
+      setNoListing(text || null);
+      setLimited(limit ? { failure: limit, query: queryRef.current, redo: redo || null } : null);
+    };
+    const canCount = () => Boolean(RLW && RLW.RetryAfterWait && SC && SC.LIMIT_WORDS);
+    const canWait = (redo) => canCount() && (typeof redo === 'function' || typeof searchRef.current === 'function');
+    const limitFailure = (err) => Object.assign(RLW.failure(err || { rateLimited: true }), { limited: true, status: 429 });
+    const sayNone = (q) => { const t = String(q == null ? '' : q).trim(); if (t) tell('No listing found for ' + t); };
+    // Once the wait is over (or Try again after it): the search, for the
+    // text still in the field. The line goes while it is out; the focus on
+    // its Try again goes back to the field.
+    const searchAgain = () => {
+      const l = limitedRef.current;
+      tell(null);
+      if (!l || queryRef.current !== l.query || !(l.redo || typeof searchRef.current === 'function')) return;
+      const a = typeof document !== 'undefined' ? document.activeElement : null;
+      if (a && a.closest && a.closest('[data-search-wait]')) {
+        const field = document.querySelector('[aria-controls="' + listId + '"]');
+        if (field) field.focus();
+      }
+      if (l.redo) l.redo();
+      else searchRef.current(l.query);
+    };
     // Enter with no row that is the text: the screen's resolve() answers --
     // a listing the search did not list (VOD.L as VOD.LSE, 7203.T checked
     // by its quote), or a sentence. An answer for text typed since is
     // dropped.
     const resolveSeq = React.useRef(0);
+    // The latest of each, for a check asked again after the wait.
+    const runResolveRef = React.useRef(null);
     const runResolve = (q, rows) => {
       const seq = ++resolveSeq.current;
       Promise.resolve().then(() => resolve(q, rows)).then((res) => {
         if (seq !== resolveSeq.current || queryRef.current !== q) return;
         if (res && res.item) { resolveSeq.current++; onPick(res.item); }
-        else if (res && res.note) setNoListing(res.note);
+        else if (res && res.note && res.limited && canCount()) tell(SC.LIMIT_WORDS, limitFailure(), () => runResolveRef.current(q, rows));
+        else if (res && res.note) tell(res.note);
       }, () => { if (seq === resolveSeq.current && queryRef.current === q) sayNone(q); });
     };
+    runResolveRef.current = runResolve;
     // Enter typed before any row arrived (the search waits for typing to
     // stop): kept for this query and served when its rows come.
     const pendingRef = React.useRef(null);
@@ -255,10 +304,15 @@
     const C3 = window.C3 || {};
     // A polite live region that is always there, so a reader hears the
     // line when it appears.
-    const noteEl = React.createElement('div', {
-      role: 'status', 'aria-live': 'polite', 'data-no-listing': noListing ? 'true' : undefined,
-      style: noListing ? { marginTop: 6, fontSize: 12, lineHeight: 1.4, overflowWrap: 'anywhere', color: isDark ? (C3.textMutedDark || 'rgba(255,255,255,0.7)') : (C3.textMutedLight || 'rgba(0,0,0,0.7)') } : undefined,
-    }, noListing || '');
+    // The wait's Try again stays outside the region: its count changes every
+    // second, and the region would read it out every second.
+    const noteEl = React.createElement(React.Fragment, null,
+      React.createElement('div', {
+        role: 'status', 'aria-live': 'polite', 'data-no-listing': noListing ? 'true' : undefined,
+        style: noListing ? { marginTop: 6, fontSize: 12, lineHeight: 1.4, overflowWrap: 'anywhere', color: isDark ? (C3.textMutedDark || 'rgba(255,255,255,0.7)') : (C3.textMutedLight || 'rgba(0,0,0,0.7)') } : undefined,
+      }, noListing || ''),
+      limited && noListing && canWait(limited.redo) ? React.createElement('div', { 'data-search-wait': 'true', style: { marginTop: 6 } },
+        React.createElement(RLW.RetryAfterWait, { failure: limited.failure, onRetry: searchAgain, panel: 'search:' + listId, isDark })) : null);
     return {
       active: painted,
       target: active,
@@ -266,8 +320,17 @@
       noteEl,
       sayNone,
       // A screen's own Enter: the same answer as the hook's (resolve), or
-      // a sentence of its own.
-      say: (text) => setNoListing(text || null),
+      // a sentence of its own. opts.error: what the screen's search threw;
+      // opts.limited: the limit stopped a check of the typed text, and
+      // opts.redo what to do again once the wait is over (else the search).
+      say: (text, opts) => {
+        const o = opts || {};
+        const redo = typeof o.redo === 'function' ? o.redo : null;
+        const atLimit = Boolean(text) && canWait(redo)
+          && (o.limited === true || (o.error !== undefined && SC.searchLimited(o.error, RLW.secondsLeft())));
+        if (atLimit) tell(o.limited === true ? SC.LIMIT_WORDS : SC.SEARCH_LIMIT_WORDS, limitFailure(o.error), redo);
+        else tell(text);
+      },
       enterNone: (q, rows) => { if (resolve) runResolve(q, rows || []); else sayNone(q); },
       // A selection made outside the hook (a row clicked, a chip): ends
       // what an Enter left out, so its late answer cannot replace it.

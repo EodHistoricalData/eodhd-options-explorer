@@ -491,8 +491,12 @@
   // was reached."), with the wait; the other failures in its words too
   // (RateLimitWait.failReason), with what to do. Kept here: this file is
   // vendored into apps that do not all ship rateLimitWait.js.
+  // LIMIT_WORDS: the limit without the wait, for a screen that counts the
+  // wait down beside them (a picker's Try again): a number written into the
+  // sentence stood still while the wait ran.
+  const LIMIT_WORDS = "EODHD's per-minute request limit was reached.";
   function limitNote(left) {
-    return "EODHD's per-minute request limit was reached." + (left ? ' Try again in ' + left + ' s.' : ' Try again in a minute.');
+    return LIMIT_WORDS + (left ? ' Try again in ' + left + ' s.' : ' Try again in a minute.');
   }
   // `unreadable`: an answer came back that could not be read (RateLimitWait's
   // own words for it); its status (200) is no reason.
@@ -516,12 +520,16 @@
   // matches "MSFT"'. RateLimitWait's words ("... did not
   // load: <reason>"); the limit with its wait. err: what the search threw;
   // left: seconds of the per-minute wait (apiFor().limited()).
+  const SEARCH_LIMIT_WORDS = 'The ticker search did not load: ' + LIMIT_WORDS;
+  // Whether searchFailNote() says the limit for this failure.
+  function searchLimited(err, left) {
+    const s = statusOf(err);
+    return Boolean(Number(left) || s === 429 || (err && (err.rateLimited || err.name === 'EODHDRateLimitError')));
+  }
   function searchFailNote(err, left) {
     const s = statusOf(err);
     const w = Number(left) || 0;
-    if (w || s === 429 || (err && (err.rateLimited || err.name === 'EODHDRateLimitError'))) {
-      return "The ticker search did not load: EODHD's per-minute request limit was reached." + (w ? ' Try again in ' + w + ' s.' : ' Try again in a minute.');
-    }
+    if (searchLimited(err, w)) return SEARCH_LIMIT_WORDS + (w ? ' Try again in ' + w + ' s.' : ' Try again in a minute.');
     const unreadable = !!(err && err.unreadable);
     return 'The ticker search did not load: ' + failReason(s, unreadable) + (refusal(s) && !unreadable ? '' : ' Try again.');
   }
@@ -651,7 +659,9 @@
       held: opts.held,
     }))
       .then((res) => {
-        if (!res.symbol) return { note: res.note };
+        // `limited`: the limit stopped the check; a picker counts the wait
+        // down beside LIMIT_WORDS and searches again once it is over.
+        if (!res.symbol) return res.reason === 'limited' ? { note: res.note, limited: true } : { note: res.note };
         if (res.index && opts.indexNote) {
           const said = opts.indexNote(res.symbol);
           if (said) return { note: said };
@@ -665,5 +675,5 @@
   // For tests: forget what the checks said.
   function forgetListed() { listedKept.clear(); listedRows.clear(); }
 
-  window.SymbolCode = { read, of, problem, index, fromRow, bestRow, typedListing, parse, searchText, resolve, listed, listedRow, noteSearch, searched, unlisted, unpriced, strip, apiFor, forPicker, forgetListed, noneNote, limitNote, failNote, searchFailNote, didYouMean, pairVenue, venueOf, FIAT, METALS, CRYPTO_QUOTE, US_VENUES, ONE_LETTER_EXCHANGES, EXCHANGES, YAHOO, UNLISTED, SEARCHED, NO_PRICES };
+  window.SymbolCode = { read, of, problem, index, fromRow, bestRow, typedListing, parse, searchText, resolve, listed, listedRow, noteSearch, searched, unlisted, unpriced, strip, apiFor, forPicker, forgetListed, noneNote, limitNote, failNote, searchFailNote, searchLimited, LIMIT_WORDS, SEARCH_LIMIT_WORDS, didYouMean, pairVenue, venueOf, FIAT, METALS, CRYPTO_QUOTE, US_VENUES, ONE_LETTER_EXCHANGES, EXCHANGES, YAHOO, UNLISTED, SEARCHED, NO_PRICES };
 })();

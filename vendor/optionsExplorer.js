@@ -53,6 +53,8 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const optExpSearchRef = React.useRef(null);
+  // The field itself: the focus comes back to it after a Try again under it.
+  const optExpInputRef = React.useRef(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const searchTimeout = useRef(null);
   // Keyboard on the suggestions: the arrow-highlighted row (-1 = none), and
@@ -149,6 +151,24 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
   // Search
   // What Enter found nothing to open for, said under the field.
   const [searchNote, setSearchNote] = useState(null);
+  // The limit stopped the search for this text, or Enter's check of it:
+  // { words, failure, query }. While the line says `words`, a Try again
+  // under it counts the wait down, and once the wait is over the search is
+  // asked again for the text still in the field. The line read "Try again
+  // in 14 s" with the number fixed when it was written, and nothing asked
+  // again; a search that met the limit while typing said nothing at all.
+  const [searchWait, setSearchWait] = useState(null);
+  const searchWaitRef = useRef(null);
+  searchWaitRef.current = searchWait;
+  // `redo`: what the limit stopped, done again after the wait -- Enter's
+  // check of a typed code (the search is never asked for one letter); with
+  // none, the search for the text in the field.
+  const sayLimited = (q, words, err, redo) => {
+    const RLW = window.RateLimitWait;
+    setSearchNote(words);
+    setSearchWait(RLW && RLW.RetryAfterWait
+      ? { words, query: q, redo: redo || null, failure: Object.assign(RLW.failure(err || { rateLimited: true }), { limited: true, status: 429 }) } : null);
+  };
   const openTypedRef = useRef(null);
   // The quote check a typed code is waiting for: a newer Enter or a pick
   // ends it.
@@ -158,6 +178,7 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
     latestQuery.current = query;
     setActiveIdx(-1);
     setSearchNote(null);
+    setSearchWait(null);
     pendingEnter.current = false;
     if (searchTimeout.current) clearTimeout(searchTimeout.current);
     // The code alone for Yahoo's suffix (search/VOD.L answers nothing), and
@@ -174,6 +195,7 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
     searchTimeout.current = setTimeout(async () => {
       let found = [];
       let failed = false;
+      let thrown;
       try {
         const results = await window.EODHD_API.searchStocks(apiKey, text, { throwErrors: true });
         // Filter to US stocks (options are mainly US)
@@ -181,12 +203,21 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
       } catch (e) {
         found = [];
         failed = true;
+        thrown = e;
       }
       // An answer for a query the user has already typed past is dropped.
       if (query !== latestQuery.current) return;
       lastFound.current = { query, rows: found, failed };
       setSearchResults(found);
       setSearchLoading(false);
+      // The limit is said at once, with its wait (sayLimited); an Enter
+      // kept for this answer is told the same and is not kept further.
+      const limitedNow = failed && SC && SC.searchLimited && SC.searchLimited(thrown, SC.apiFor(window.EODHD_API, apiKey).limited());
+      if (limitedNow) {
+        pendingEnter.current = false;
+        sayLimited(query, SC.SEARCH_LIMIT_WORDS, thrown);
+        return;
+      }
       // An Enter kept for this answer, which has no row: the typed code
       // decides (an index, a listing outside the US, not found). It waited
       // for a row and nothing happened.
@@ -273,9 +304,18 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
   const loadSeqRef = useRef(0);
   // The expiries already asked for one by one, for the chain on screen.
   const askedExpiryRef = useRef(new Set());
+  // The automatic reload after a limit's wait: how many the load on screen
+  // has left (one for a load someone asked for), and whether the load being
+  // started is that reload.
+  const autoReloadLeftRef = useRef(0);
+  const autoReloadingRef = useRef(false);
   const selectTicker = useCallback(async (symbol, name) => {
     const seq = ++loadSeqRef.current;
     const current = () => seq === loadSeqRef.current;
+    // A load someone asked for (a pick, Enter, a link, Try again) may be
+    // made again by itself once after a limit's wait; the reload itself may not.
+    autoReloadLeftRef.current = autoReloadingRef.current ? 0 : 1;
+    autoReloadingRef.current = false;
     setSelectedSymbol({ symbol, name });
     // The screen someone is looking at is worth a link. Nothing was reflected
     // in the URL, so a reload lost the ticker and the tab and there was no way
@@ -378,6 +418,28 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
   }, [apiKey]);
   selectTickerRef.current = selectTicker;
 
+  // A chain the limit stopped loads again by itself once the wait is over,
+  // as every other screen does; it stayed "Options did not load" with Try
+  // again. It costs no extra view: the daily preview counts an underlying
+  // once a day (the terminal's server take), a load answered 429 -- or 502 with
+  // EODHD's 429 -- is given back as nothing was shown (refund_due, the
+  // capability gate in the terminal's server), and a load held inside the wait is never
+  // sent. Once per load someone asked for: a reload the limit stops again
+  // shows the wait and Try again, and waits for a press. Each reload re-armed
+  // the next, and a limit that held reloaded the chain for ever.
+  const chainLimit = optionsData && optionsData.retry && optionsData.failed && optionsData.failed.limited && selectedSymbol
+    && autoReloadLeftRef.current > 0 ? optionsData.failed : null;
+  window.RateLimitWait.useReloadAfterWait(chainLimit, () => {
+    const sel = selectedRef.current;
+    if (!sel || autoReloadLeftRef.current < 1) return;
+    autoReloadLeftRef.current = 0;
+    // The focus on Try again goes where a press puts it (retryFocusRef).
+    const a = document.activeElement;
+    retryFocusRef.current = Boolean(a && a.closest && a.closest('[data-opt-retry]'));
+    autoReloadingRef.current = true;
+    selectTickerRef.current(sel.symbol, sel.name);
+  }, 'options-chain');
+
   // Enter with no row to open: what the typed text is (window.SymbolCode),
   // the same answer a link gives. An index or a listing typed with its
   // exchange -- Yahoo's too, VOD.L is VOD.LSE -- is named by the page
@@ -443,8 +505,9 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
       // the same line, offline or back online. Inside a
       // 429 wait nothing is sent; an Enter kept for a search that failed
       // again says so once, and does not ask by itself.
-      if (left || afterAnswer) {
-        setSearchNote(left ? SC.limitNote(left) : 'The ticker search did not answer. Press Enter to try again.');
+      if (left) { sayLimited(q, SC.SEARCH_LIMIT_WORDS ? SC.SEARCH_LIMIT_WORDS : SC.limitNote(left), null, () => openTypedRef.current(q)); return; }
+      if (afterAnswer) {
+        setSearchNote('The ticker search did not answer. Press Enter to try again.');
         return;
       }
       handleSearch(q);
@@ -465,7 +528,7 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
       Promise.resolve(SC.listed(sym, api)).then((ok) => {
         if (seq !== typedCheckRef.current || latestQuery.current !== q) return;
         if (ok === true) selectTicker(sym, '');
-        else if (ok === 'limited') setSearchNote(SC.limitNote(api.limited()));
+        else if (ok === 'limited') sayLimited(q, SC.LIMIT_WORDS || SC.limitNote(api.limited()), null, () => openTypedRef.current(q));
         else if (ok && ok.failed !== undefined) setSearchNote(SC.failNote(q, ok.failed, ok.unreadable));
         else setSearchNote(notFound());
       });
@@ -1276,6 +1339,7 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
                 <Icon name="search" size={18} color={isDark ? C3.textMutedDark : C3.textMutedLight} />
               </span>
               <input {...window.TickerFieldProps}
+                ref={optExpInputRef}
                 type="text"
                 value={searchQuery}
                 onChange={(e) => handleSearch(e.target.value)}
@@ -1316,6 +1380,26 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
             style={searchNote ? { marginTop: 6, fontSize: 12, lineHeight: 1.4, overflowWrap: 'anywhere', color: isDark ? C3.textMutedDark : C3.textMutedLight } : undefined}>
             {searchNote || ''}
           </div>
+          {/* Outside the region: its count changes every second. */}
+          {searchWait && searchNote === searchWait.words && (
+            <div data-search-wait="true" style={{ marginTop: 6 }}>
+              {React.createElement(window.RateLimitWait.RetryAfterWait, {
+                failure: searchWait.failure, panel: 'search:opt-exp-suggestions', isDark,
+                onRetry: () => {
+                  const w = searchWaitRef.current;
+                  setSearchWait(null);
+                  setSearchNote(null);
+                  if (!w || latestQuery.current !== w.query) return;
+                  // The line leaves while the search is out: the focus on its
+                  // Try again goes back to the field.
+                  const a = document.activeElement;
+                  if (a && a.closest && a.closest('[data-search-wait]') && optExpInputRef.current) optExpInputRef.current.focus();
+                  if (w.redo) w.redo();
+                  else handleSearch(w.query);
+                },
+              })}
+            </div>
+          )}
 
           {React.createElement(window.PortalSearchPopup, {
             anchorRef: optExpSearchRef,

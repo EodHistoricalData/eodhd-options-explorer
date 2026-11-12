@@ -546,6 +546,23 @@ window.RateLimitWait = (function () {
     }, []);
   }
 
+  // A Try again whose words are said elsewhere -- a picker's line under its
+  // field, which is a live region of its own: the button counting the wait
+  // down (and the note of a press it held), and, when the limit was why, the
+  // same reload once the wait is over as a FailNote's.
+  // props: failure (failure()), onRetry, panel (the name its reloads are
+  // paced by), isDark, label, style.
+  function RetryAfterWait(props) {
+    var C3 = window.C3 || {};
+    useReloadAfterWait(props.failure, props.onRetry, props.panel);
+    return window.React.createElement(RetryButton, {
+      isDark: props.isDark, label: props.label, onClick: props.onRetry, 'data-retry-focus': 'true',
+      style: Object.assign({ padding: '4px 12px', minHeight: 32, borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600,
+        background: 'none', border: '1px solid ' + (props.isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.25)'),
+        color: props.isDark ? (C3.textDark || '#E0E3EB') : (C3.textLightTheme || '#1e1b4b') }, props.style),
+    });
+  }
+
   function FailNote(props) {
     var R = window.React;
     var f = props.failure;
@@ -581,7 +598,7 @@ window.RateLimitWait = (function () {
     announce: announce, unreadableError: unreadableError, notData: notData, label: label, waitLook: waitLook,
     RetryButton: RetryButton, failure: failure, failText: failText, failReason: failReason, outage: outage,
     setBusy: setBusy, endBusy: endBusy, busyOf: busyOf, useBusy: useBusy,
-    useReloadAfterWait: useReloadAfterWait, FailNote: FailNote, JOIN_MS: JOIN_MS, joins: joins, focusOnRetry: focusOnRetry,
+    useReloadAfterWait: useReloadAfterWait, FailNote: FailNote, RetryAfterWait: RetryAfterWait, JOIN_MS: JOIN_MS, joins: joins, focusOnRetry: focusOnRetry,
     // The nearest heading before an element that is still on the page, for
     // a view that puts the focus back itself after a retry.
     headingBefore: function (el) { return headingsBefore(el).filter(function (h) { return document.contains(h); })[0] || null; },

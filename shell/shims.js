@@ -59,6 +59,16 @@ window.DataSync = null;
 // somebody else's machine; empty keeps the string concatenations honest.
 window.MI_PUBLIC_PREFIX = '';
 
+// Two parts of the terminal that come from its own server, which a
+// standalone app does not have: here the developer's EODHD plan decides what
+// the key reaches, and EODHD says so itself with a 403. null, because every
+// module reads them as `W ? W.something(...) : fallback`, and the fallback is
+// the terminal's own "nothing to do here". Not stand-in objects: past that
+// guard the modules call whatever the terminal's version has, and a stand-in
+// would have to follow every method it grows.
+window.FreeLimits = null;
+window.FreeLimitWalls = null;
+
 /**
  * The terminal's paywall, which does not exist here.
  *
