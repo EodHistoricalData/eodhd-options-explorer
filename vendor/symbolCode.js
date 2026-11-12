@@ -42,7 +42,7 @@
     'MUR', 'MVR', 'SCR', 'TZS', 'UGX', 'RWF', 'ZMW', 'BWP', 'NAD', 'SZL', 'LSL', 'MWK', 'MZN', 'AOA', 'ETB', 'DZD',
     'TND', 'LYD', 'LBP', 'IQD', 'IRR', 'SYP', 'YER', 'AFN', 'RSD', 'MKD', 'ALL', 'BAM', 'MDL', 'FJD', 'PGK', 'BND',
     'MOP', 'XDR',
-    // On 26.10: CDFUSD, EURKYD, GBPBMD read as US shares.
+    // CDFUSD, EURKYD, GBPBMD read as US shares.
     'CDF', 'KYD', 'BMD', 'SOS', 'SDG', 'GNF', 'HTG', 'ERN', 'LRD', 'SLE', 'SLL', 'GMD', 'CVE', 'KMF', 'MGA', 'DJF',
     'BIF', 'SSP', 'ZWL', 'VES', 'VUV', 'WST', 'TOP', 'SBD', 'STN', 'SRD', 'GYD', 'FKP', 'GIP', 'SHP', 'CUP', 'BTN'];
   // Metals EODHD lists as FOREX pairs, either way round (XAUUSD, USDXAU).

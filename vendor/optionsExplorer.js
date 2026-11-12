@@ -302,6 +302,10 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
   // answers came: MSFT's strikes were drawn against AAPL's price ("Current:
   // $334.16"), and ITM, GEX and the payoff were computed from it. Each pick takes a number; an answer for an older number is dropped.
   const loadSeqRef = useRef(0);
+  // A screen taken away asks for nothing more: its load stops at the next
+  // step, before the chain's pages go out (a second
+  // mount's chain came on top of the first one's, still loading).
+  useEffect(() => () => { loadSeqRef.current++; }, []);
   // The expiries already asked for one by one, for the chain on screen.
   const askedExpiryRef = useRef(new Set());
   // The automatic reload after a limit's wait: how many the load on screen
