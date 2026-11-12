@@ -835,6 +835,22 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
     </div>
   );
 
+  // Part of the chain that did not load, asked for again from there: a
+  // press of Try again is a load asked for. The reload by itself once the
+  // limit's wait is over (chainReload) is that load's one automatic reload,
+  // as the whole chain's above, and null once it is spent: it was the press,
+  // so each reload armed the next, and a later page that kept answering 429
+  // had the four pages asked for again after every wait, for ever.
+  const chainRetry = selectedSymbol ? () => { retryFocusRef.current = true; selectTicker(selectedSymbol.symbol, selectedSymbol.name); } : null;
+  const chainReload = selectedSymbol && autoReloadLeftRef.current > 0 ? () => {
+    const sel = selectedRef.current;
+    if (!sel || autoReloadLeftRef.current < 1) return;
+    autoReloadLeftRef.current = 0;
+    retryFocusRef.current = window.RateLimitWait.focusOnRetry();
+    autoReloadingRef.current = true;
+    selectTickerRef.current(sel.symbol, sel.name);
+  } : null;
+
   const renderOptionsChain = () => {
     if (!optionsData?.data || optionsData.data.length === 0) return null;
     const showPaywall = !hasOptionsAccess;
@@ -1666,12 +1682,14 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
               {optionsTab === 'chain' && renderOptionsChain()}
               {optionsTab === 'calculator' && React.createElement(window.OptionsCalculator, { optionsData, currentPrice, isDark, apiKey })}
               {optionsTab === 'payoff' && React.createElement(window.PayoffBuilder, { optionsData, currentPrice, isDark, apiKey })}
-              {optionsTab === 'gex' && React.createElement(window.GEXDashboard, { optionsData, currentPrice, isDark, apiKey })}
               {/* onRetry: part of the chain that did not load is asked for
-                  again from there (optionsData.partFail). */}
-              {optionsTab === 'unusual' && React.createElement(window.UnusualActivityScanner, { optionsData, currentPrice, isDark, apiKey,
-                onRetry: selectedSymbol ? () => { retryFocusRef.current = true; selectTicker(selectedSymbol.symbol, selectedSymbol.name); } : null })}
-              {optionsTab === 'iv' && React.createElement(window.IVSurfaceView, { optionsData, currentPrice, isDark, apiKey })}
+                  again from there (optionsData.partFail). GEX and the IV
+                  surface sum the chain up too, so they say it as well.
+                  onReload: the reload after the wait, within the load's
+                  budget (chainReload). */}
+              {optionsTab === 'gex' && React.createElement(window.GEXDashboard, { optionsData, currentPrice, isDark, apiKey, onRetry: chainRetry, onReload: chainReload })}
+              {optionsTab === 'unusual' && React.createElement(window.UnusualActivityScanner, { optionsData, currentPrice, isDark, apiKey, onRetry: chainRetry, onReload: chainReload })}
+              {optionsTab === 'iv' && React.createElement(window.IVSurfaceView, { optionsData, currentPrice, isDark, apiKey, onRetry: chainRetry, onReload: chainReload })}
             </div>
           )
         )}

@@ -62,15 +62,53 @@
        terminal's classes (.mi-tabbar, .mi-tab), and the rules for them live
        in the terminal's stylesheet: without these, a tab bar drew as a row of
        plain browser buttons. The terminal's rules, its colours written out
-       for each theme. */
+       for each theme. One accent per theme for the open tab, the shell's
+       own strip included: the light theme's orange on white, the brighter
+       one on the dark ground (#f97316 on white is 2.5:1). */
     :root { --mi-tab-line: #2B2820; --mi-tab-ink: #A39B89; --mi-tab-ink-on: #E9E6DF;
-            --mi-tab-hover: #3A362B; --mi-tab-accent: #c2410c; --mi-tab-ring: #f97316; }
+            --mi-tab-hover: #3A362B; --mi-tab-accent: #f97316; --mi-tab-ring: #f97316;
+            --mi-tab-thumb: rgba(255,255,255,0.32); --mi-tab-fade: 28px; }
     html[data-theme="light"] { --mi-tab-line: #e2e4e9; --mi-tab-ink: #374151; --mi-tab-ink-on: #1e1b4b;
-            --mi-tab-hover: #d1d5db; --mi-tab-ring: #c2410c; }
-    .mi-tabbar { display: flex; align-items: stretch; gap: 4px; margin: 0; padding: 0;
-                 border-bottom: 1px solid var(--mi-tab-line); overflow-x: auto; overflow-y: hidden;
-                 flex-wrap: nowrap !important; scrollbar-width: none; }
-    .mi-tabbar::-webkit-scrollbar { display: none; }
+            --mi-tab-hover: #d1d5db; --mi-tab-accent: #c2410c; --mi-tab-ring: #c2410c;
+            --mi-tab-thumb: rgba(0,0,0,0.32); }
+    /* The hairline is the bar's background, not its border: a scroller clips
+       at its padding box, and an underline set 1 px into the border to sit on
+       the line lost that pixel and drew 1 px of its 2. The line is drawn at
+       the bottom of what scrolls (local), where the tabs end, so the
+       underline covers it, and above the scrollbar when there is one. */
+    .mi-tabbar { display: flex; align-items: stretch; gap: 4px; margin: 0; padding: 0; min-height: 41px;
+                 border: 0; background: linear-gradient(var(--mi-tab-line), var(--mi-tab-line)) left bottom / 100% 1px no-repeat local;
+                 overflow-x: auto; overflow-y: hidden; flex-wrap: nowrap !important;
+                 scrollbar-width: none; --mi-fade-start: 0px; --mi-fade-end: 0px;
+                 transition: --mi-fade-start 150ms ease-out, --mi-fade-end 150ms ease-out; }
+    .mi-tabbar::-webkit-scrollbar { height: 0; }
+    /* More tabs than fit: the side that has more fades out (shell/tabbar.js
+       says which). On a phone the row is swiped; with a mouse a thin bar
+       shows under it while the pointer or the focus is in it, in room the
+       bar always keeps, so nothing moves when it appears. */
+    @property --mi-fade-start { syntax: '<length>'; inherits: false; initial-value: 0px; }
+    @property --mi-fade-end { syntax: '<length>'; inherits: false; initial-value: 0px; }
+    .mi-tabbar[data-mi-more~="start"] { --mi-fade-start: var(--mi-tab-fade); }
+    .mi-tabbar[data-mi-more~="end"] { --mi-fade-end: var(--mi-tab-fade); }
+    .mi-tabbar[data-mi-more] {
+      -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--mi-fade-start), #000 calc(100% - var(--mi-fade-end)), transparent);
+      mask-image: linear-gradient(to right, transparent, #000 var(--mi-fade-start), #000 calc(100% - var(--mi-fade-end)), transparent); }
+    @media (hover: hover) and (pointer: fine) {
+      .mi-tabbar { scrollbar-width: auto; scrollbar-color: auto; }
+      .mi-tabbar::-webkit-scrollbar { height: 4px; }
+      .mi-tabbar::-webkit-scrollbar-track, .mi-tabbar::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
+      .mi-tabbar:hover::-webkit-scrollbar-thumb, .mi-tabbar:focus-within::-webkit-scrollbar-thumb { background: var(--mi-tab-thumb); }
+      /* Chrome and Safari restyle a scrollbar when it is made, not when the
+         pointer comes in, and the thumb above stayed hidden. A bar with more
+         tabs already has its 4 px scrollbar; asking for one that is always
+         there makes it again, the same size, so nothing moves. */
+      .mi-tabbar[data-mi-more]:hover, .mi-tabbar[data-mi-more]:focus-within { overflow-x: scroll; }
+      /* Firefox has no such pseudo-elements: the two properties instead. */
+      @supports (-moz-appearance: none) {
+        .mi-tabbar { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+        .mi-tabbar:hover, .mi-tabbar:focus-within { scrollbar-color: var(--mi-tab-thumb) transparent; }
+      }
+    }
     .mi-tab { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center;
               justify-content: center; min-width: 40px; min-height: 40px; margin: 0; padding: 0 12px;
               background: none; border: 0; border-radius: 0; color: var(--mi-tab-ink);
@@ -80,7 +118,7 @@
     .mi-tab:active { transform: scale(0.97); }
     .mi-tabbar > .mi-tab:first-child { padding-left: 0; transform-origin: left center; }
     .mi-tab::before, .mi-tab::after { content: ''; position: absolute; left: 12px; right: 12px;
-              bottom: -1px; height: 2px; opacity: 0; pointer-events: none; }
+              bottom: 0; height: 2px; opacity: 0; pointer-events: none; }
     .mi-tabbar > .mi-tab:first-child::before, .mi-tabbar > .mi-tab:first-child::after { left: 0; }
     .mi-tab::before { background: var(--mi-tab-hover); transition: opacity 150ms ease; }
     .mi-tab::after { background: var(--mi-tab-accent); }

@@ -33,6 +33,7 @@ const FILES = [
   "shell/entitlement.js",
   "shell/upgrade.js",
   "shell/tabs.js",
+  "shell/tabbar.js",
   "shell/feed.js",
   "shell/frame.js",
   "shell/keygate.js",

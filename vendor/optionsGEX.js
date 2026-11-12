@@ -400,7 +400,7 @@ window.GEXEngine = {
 
 
 // ==================== GEX Dashboard Component ====================
-window.GEXDashboard = ({ optionsData, currentPrice, isDark, apiKey }) => {
+window.GEXDashboard = ({ optionsData, currentPrice, isDark, apiKey, onRetry, onReload }) => {
   // The prices of this screen's AI actions, from the server's list.
   const useFeatureCost = (() => null);
   const gexCost = useFeatureCost('options_ai_gex');
@@ -549,6 +549,14 @@ Keep it concise (150 words max). Use **bold** for key terms.`;
       React.createElement('span', { style: { background: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)', padding: '2px 8px', borderRadius: '4px' } }, 'EOD Data'),
       'Gamma Exposure estimates based on end-of-day open interest. Not real-time.'
     ),
+    // Part of the chain did not load: the exposure is of the part that did,
+    // and says so -- it summed what loaded without a word. It reloads by
+    // itself after the limit's wait only while the chain's budget allows
+    // (onReload, null once spent); Try again always.
+    optionsData && optionsData.partFail && window.RateLimitWait && React.createElement(window.RateLimitWait.FailNote, {
+      what: 'Part of the options chain', failure: window.RateLimitWait.failure(optionsData.partFail), onRetry, onReload, autoRetry: Boolean(onReload), isDark, panel: 'options-gex',
+      extra: 'The figures below are from the contracts that loaded.', style: { fontSize: 12, marginBottom: 12 },
+    }),
 
     // Expiry Filter
     React.createElement('div', { role: 'group', 'aria-label': 'Expiry', style: { display: 'flex', gap: '6px', marginBottom: '16px', flexWrap: 'wrap' } },

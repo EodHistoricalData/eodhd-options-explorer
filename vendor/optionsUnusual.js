@@ -16,7 +16,7 @@ window.optionMoneynessLabel = (otmPct) => {
   return Math.abs(otmPct) + '% ' + (otmPct > 0 ? 'OTM' : 'ITM');
 };
 
-window.UnusualActivityScanner = ({ optionsData, currentPrice, isDark, apiKey, onRetry }) => {
+window.UnusualActivityScanner = ({ optionsData, currentPrice, isDark, apiKey, onRetry, onReload }) => {
   // The prices of this screen's AI actions, from the server's list.
   const useFeatureCost = (() => null);
   const whyCost = useFeatureCost('options_ai_unusual');
@@ -187,6 +187,11 @@ Keep it concise (120 words). Use **bold** for key terms.`;
   const totalNotional = anomalies.reduce((s, a) => s + a.notional, 0);
   const callNotional = anomalies.filter(a => a.type === 'Call').reduce((s, a) => s + a.notional, 0);
   const sentiment = totalNotional > 0 ? (callNotional / totalNotional * 100) : 50;
+  // Part of the chain did not load: the cards are of the part that did, and
+  // say so; with nothing found in it there is nothing to sum up, and "0 /
+  // 0.0σ / 50%–50% Neutral Flow / $0K" read as a measurement of the chain
+  // above the line that says part of it is missing.
+  const summaryShown = !partFail || anomalies.length > 0;
 
   return React.createElement('div', null,
     // EOD badge
@@ -195,8 +200,10 @@ Keep it concise (120 words). Use **bold** for key terms.`;
       'Anomalies detected from end-of-day volume data. Threshold: 3σ+ or Vol/OI 3x+'
     ),
 
+    partFail && summaryShown && React.createElement('div', { 'data-unusual-part': 'true', style: { fontSize: '12px', marginBottom: '8px', color: isDark ? C3.textDark : C3.textLightTheme } },
+      'From the part of the chain that loaded.'),
     // Summary cards
-    React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px', marginBottom: '16px' } },
+    summaryShown && React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px', marginBottom: '16px' } },
       React.createElement('div', { style: { ...cardStyle, textAlign: 'center', marginBottom: 0 } },
         React.createElement('div', { style: { fontSize: '10px', opacity: 0.7 } }, 'Unusual Strikes'),
         React.createElement('div', { style: { fontSize: '22px', fontWeight: '700', color: anomalies.length > 0 ? (window.A11yColor ? window.A11yColor.text('#f59e0b', isDark) : '#f59e0b') : isDark ? C3.textDark : C3.textLightTheme } }, anomalies.length)
@@ -268,8 +275,10 @@ Keep it concise (120 words). Use **bold** for key terms.`;
     // answer that could not be read): said with its reason and Try again,
     // above the activity found in what did load -- and never "No Unusual
     // Activity Detected", which is a statement about the whole chain.
+    // By itself after the limit's
+    // wait only within the chain's budget (onReload, null once spent).
     partFail && React.createElement(window.RateLimitWait.FailNote, {
-      what: 'Part of the options chain', failure: partFail, onRetry, isDark, panel: 'options-unusual',
+      what: 'Part of the options chain', failure: partFail, onRetry, onReload, autoRetry: Boolean(onReload), isDark, panel: 'options-unusual',
       extra: filtered.length ? 'The activity below is from the contracts that loaded.' : null,
       style: { ...cardStyle, marginBottom: '12px' },
     }),

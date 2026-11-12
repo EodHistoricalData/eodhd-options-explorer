@@ -157,6 +157,43 @@
     return R ? R.useWait() : null;
   }
 
+  // The retry the screen under the panel has, by the words it shows (its
+  // name, for an icon). The panel stands over every view, and "use Try
+  // again" stood over a heatmap whose only retry was Refresh prices. Only
+  // the views' retries, in this order of preference: the portfolio's
+  // "Refresh" asks the model again and retries nothing. None found: the
+  // panel says reload, which every screen has.
+  var RETRIES = ['Try again', 'Refresh prices', 'Refresh sentiment', 'Refresh news'];
+  function retryOnScreen() {
+    if (typeof document === 'undefined' || !document.querySelectorAll) return null;
+    var root = document.getElementById('root') || document.body;
+    if (!root) return null;
+    var found = -1;
+    var buttons = root.querySelectorAll('button, [role="button"]');
+    for (var i = 0; i < buttons.length; i++) {
+      var b = buttons[i];
+      if (b.disabled || (b.closest && b.closest('[hidden], [aria-hidden="true"], [inert]'))) continue;
+      if (typeof b.checkVisibility === 'function' && !b.checkVisibility()) continue;
+      // "Try again in 3 s", "Refresh prices (in 3 s)": the count goes.
+      var words = (String(b.textContent || '').trim() || String(b.getAttribute('aria-label') || '').trim())
+        .replace(/\s*\(?in \d+ s\)?$/, '');
+      var at = RETRIES.indexOf(words);
+      if (at !== -1 && (found === -1 || at < found)) found = at;
+    }
+    return found === -1 ? null : RETRIES[found];
+  }
+  function overLine(retry) {
+    return retry
+      ? 'The wait is over: use ' + retry + ', or reload the page.'
+      : 'The wait is over: reload the page.';
+  }
+  // Read after the page has drawn, so a view mounted with the panel is seen;
+  // before the paint where there is a page, so the line does not change in
+  // front of the reader.
+  function useAfterDraw(fn) {
+    return (typeof document !== 'undefined' ? React.useLayoutEffect : React.useEffect)(fn);
+  }
+
   window.StatusPanel = function (props) {
     var P = palette(props && props.theme);
     var p = (props && props.problem) || {};
@@ -175,6 +212,16 @@
       }
     }, [left]);
     var waitLine = null;
+    // The retry named once the wait is over: read from the page as it is
+    // drawn, and again after each draw (a view mounted with the panel).
+    var named = React.useState(null);
+    var over = !!wait && !left && p.kind === 'quota' && p.status === 429;
+    var retry = over ? (retryOnScreen() || named[0]) : null;
+    useAfterDraw(function () {
+      if (!over) return;
+      var now = retryOnScreen();
+      if (now !== named[0]) named[1](now);
+    });
 
     if (p.kind === 'key') {
       title = 'EODHD did not accept the key';
@@ -192,8 +239,8 @@
       title = 'Too many requests at once';
       // One wait, one number: "Wait a minute and reload" stood over a Try
       // again counting 27 s. The panel names the wait
-      // the buttons count, from the same clock, and the button rather than a
-      // reload.
+      // the buttons count, from the same clock, and then the button the
+      // screen has (retryOnScreen) before a reload.
       lines = [
         sentence(p.reason)
           + 'EODHD limits how many requests a key may make per minute, as well as per day.',
@@ -202,7 +249,7 @@
       if (wait) {
         waitLine = left
           ? 'Requests resume in ' + left + ' s.'
-          : 'The wait is over: use Try again, or reload the page.';
+          : overLine(retry);
       } else {
         lines[1] += ' Wait a minute and reload.';
       }

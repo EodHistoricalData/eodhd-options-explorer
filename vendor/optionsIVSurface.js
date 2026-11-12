@@ -1,7 +1,7 @@
 // IV Surface Visualizer — Implied Volatility heatmap and skew analysis
 // Ported from: volvisualizer (IV surface construction, skew/smile extraction)
 
-window.IVSurfaceView = ({ optionsData, currentPrice, isDark, apiKey }) => {
+window.IVSurfaceView = ({ optionsData, currentPrice, isDark, apiKey, onRetry, onReload }) => {
   // The prices of this screen's AI actions, from the server's list.
   const useFeatureCost = (() => null);
   const ivCost = useFeatureCost('options_ai_iv');
@@ -219,6 +219,13 @@ Analyze: 1) What does the term structure say (near-term IV above or below longer
   const { expiries, strikes, expiryMap } = surfaceData;
 
   return React.createElement('div', null,
+    // Part of the chain did not load: the surface is of the part that did,
+    // and says so. By itself after the limit's wait only within the chain's
+    // budget (onReload, null once spent); Try again always.
+    optionsData && optionsData.partFail && window.RateLimitWait && React.createElement(window.RateLimitWait.FailNote, {
+      what: 'Part of the options chain', failure: window.RateLimitWait.failure(optionsData.partFail), onRetry, onReload, autoRetry: Boolean(onReload), isDark, panel: 'options-iv',
+      extra: 'The figures below are from the contracts that loaded.', style: { fontSize: 12, marginBottom: 12 },
+    }),
     // Summary cards
     React.createElement('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px', marginBottom: '16px' } },
       React.createElement('div', { style: { ...cardStyle, textAlign: 'center', marginBottom: 0 } },

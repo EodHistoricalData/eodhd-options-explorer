@@ -494,7 +494,10 @@ window.RateLimitWait = (function () {
   // props: what ("The price history"), failure (failure()), onRetry,
   // isDark, text (instead of failText), label, style, buttonStyle, autoRetry
   // (false: the button only), extra (a sentence after the reason),
-  // ownFocus (true: the view puts the focus back itself after a retry).
+  // ownFocus (true: the view puts the focus back itself after a retry),
+  // busyKey (the work its retry runs, as RetryButton's), onReload (the
+  // reload after the wait when it is not a press -- a view that keeps a
+  // budget for it; onRetry when absent).
   //
   // The focus after a retry -- pressed, or the reload after the wait -- when
   // it was on this line: the line leaves while the panel loads, and the
@@ -569,7 +572,8 @@ window.RateLimitWait = (function () {
     var w = useWait();
     var panel = props.panel || props.what || props.text;
     // `panel`: the name its automatic reloads are paced by (useReloadAfterWait).
-    useReloadAfterWait(props.autoRetry === false || !props.onRetry ? null : f, props.onRetry, panel);
+    var reload = props.onReload || props.onRetry;
+    useReloadAfterWait(props.autoRetry === false || !reload ? null : f, reload, panel);
     var boxRef = R.useRef(null);
     useRetryFocus(boxRef, panel, Boolean(props.ownFocus));
     var C3 = window.C3 || {};
@@ -584,8 +588,9 @@ window.RateLimitWait = (function () {
     },
       R.createElement('span', { role: 'status' }, words),
       w.note ? R.createElement('span', { 'data-rl-count': 'true' }, ' ' + w.note) : null,
+      // busyKey: the work the retry runs (setBusy) -- "Loading…" meanwhile.
       props.onRetry ? R.createElement(RetryButton, {
-        wait: w, isDark: props.isDark, label: props.label, onClick: props.onRetry, 'data-retry-focus': props['data-retry-focus'],
+        wait: w, isDark: props.isDark, label: props.label, onClick: props.onRetry, 'data-retry-focus': props['data-retry-focus'], busyKey: props.busyKey,
         style: Object.assign({ marginLeft: 8, padding: '4px 12px', minHeight: 32, borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600,
           background: 'none', border: '1px solid ' + (props.isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.25)'),
           color: props.isDark ? (C3.textDark || '#E0E3EB') : (C3.textLightTheme || '#1e1b4b') }, props.buttonStyle),
