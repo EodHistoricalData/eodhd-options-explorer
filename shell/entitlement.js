@@ -29,6 +29,13 @@
 (function () {
   var state = {};     // capability -> { allowed, reason }    (plan verdicts)
   var problems = {};  // capability -> { kind, status, reason } (request problems)
+  // Problems the screen says itself: the request's caller shows its own
+  // line and its own Try again (api.js marks the request `owned`). The panel
+  // above was a second message about one failure -- "EODHD did not answer
+  // … Nothing below is missing data" over the options chain's "Part of the
+  // options chain did not load", and over the portfolio's "1 without a
+  // price". Kept apart, so they never take the place of the panel's.
+  var said = {};      // capability -> { kind, status, reason }
   var listeners = [];
   // A count of what has happened, in order: every request sent and every
   // problem recorded takes the next number. It is how a success is known to
@@ -206,9 +213,9 @@
         // first must not take the second's refusal off the screen. A caller
         // that does not say when it asked is taken at its word, as before.
         var sent = res ? res.sent : null;
-        if (problems[capability] && (sent == null || problems[capability].seq <= sent)) {
-          delete problems[capability];
-        }
+        [problems, said].forEach(function (map) {
+          if (map[capability] && (sent == null || map[capability].seq <= sent)) delete map[capability];
+        });
         clearKeyWide(capability, sent);
         if (sent != null && sent > served) served = sent;
         // A request that never got an answer (status 0: offline, a dropped
@@ -230,8 +237,7 @@
     // rate is the quota, anything else is still the plan.
     if (status === 402 && isRateLimitBody(res && res.body)) {
       if (capability) {
-        problems[capability] = { kind: 'quota', status: 402, reason: bodySentence(res.body) || null, daily: isDailyBody(res.body), seq: ++seq };
-        notify(capability);
+        keep(capability, { kind: 'quota', status: 402, reason: bodySentence(res.body) || null, daily: isDailyBody(res.body), seq: ++seq }, res);
       }
       return { allowed: null, reason: null, problem: 'quota' };
     }
@@ -260,10 +266,70 @@
 
     if (kind && capability) {
       var text = bodySentence(res && res.body);
-      problems[capability] = { kind: kind, status: status || 0, reason: text || null, seq: ++seq };
-      notify(capability);
+      keep(capability, { kind: kind, status: status || 0, reason: text || null, seq: ++seq }, res);
     }
     return { allowed: null, reason: null, problem: kind };
+  }
+
+  /**
+   * Where a request's problem is kept, and who is told.
+   *
+   * `res.owned` says the screen that asked names the failure itself (its
+   * own line, its own Try again): true, or a function asked when the panel
+   * is drawn, for a caller that knows only later -- an exchange's status,
+   * whose line comes once ExchangeStatus keeps the failure (the current
+   * module keeps a 500 not at all); a later page of the options chain,
+   * the chain's own once its first page came with contracts. True goes to
+   * `said`, and the panel's own stay where they were.
+   *
+   * Either way, only what such a line says as well as the panel does
+   * leaves the panel (lineSays): EODHD's error, no answer, the per-minute
+   * limit. A refused key and a spent day are the panel's whoever asked --
+   * the line has no word of .env, or of when the day resets. An owner
+   * asked later used to take them too: a 401 on the options chain's
+   * second page hid the panel that had to say the key was refused.
+   */
+  function lineSays(p) { return p.kind === 'upstream' || p.status === 429; }
+
+  function keep(capability, p, res) {
+    var owned = res && res.owned;
+    if (owned === true) {
+      said[capability] = p;
+      if (lineSays(p)) { notify(capability); return; }
+    } else if (typeof owned === 'function') {
+      p.owner = owned;
+    }
+    problems[capability] = p;
+    // Told after the caller has had the answer, so the panel is drawn once
+    // the owner knows; until then nothing has changed on the screen.
+    if (p.owner) setTimeout(function () { notify(capability); }, 0);
+    else notify(capability);
+  }
+
+  // Whether the problem's owner has taken it. Asked until it answers yes,
+  // and kept so: a retry clears the module's failure while it asks again,
+  // and the panel would come back for the length of each one.
+  function taken(p) {
+    if (!p || !p.owner) return false;
+    if (p.owner === true) return true;
+    var yes = false;
+    try { yes = Boolean(p.owner()); } catch (_) { yes = false; }
+    if (yes) p.owner = true;
+    return yes;
+  }
+
+  // The screen says it: taken, and a failure its line says in full.
+  function saidBelow(p) { return lineSays(p) && taken(p); }
+
+  /** Is something on the screen naming a failure of its own? */
+  function partial() {
+    for (var cap in said) {
+      if (Object.prototype.hasOwnProperty.call(said, cap)) return true;
+    }
+    for (var c in problems) {
+      if (Object.prototype.hasOwnProperty.call(problems, c) && taken(problems[c])) return true;
+    }
+    return false;
   }
 
   // The sentence a problem's body carries, or ''. A JSON body is read for
@@ -356,12 +422,16 @@
    * down (wait). Whichever is shown, the views below are not "empty"; their
    * requests never came back.
    */
+  //
+  // Not one the screen says itself (saidBelow). `partial`: something below
+  // names a failure of its own, so the panel does not say that nothing
+  // below is missing.
   function problem() {
     var order = ['key', 'quota', 'upstream'];
     for (var i = 0; i < order.length; i++) {
       for (var cap in problems) {
-        if (Object.prototype.hasOwnProperty.call(problems, cap) && problems[cap].kind === order[i]) {
-          return { kind: problems[cap].kind, status: problems[cap].status, reason: problems[cap].reason, capability: cap, daily: Boolean(problems[cap].daily), seq: problems[cap].seq };
+        if (Object.prototype.hasOwnProperty.call(problems, cap) && problems[cap].kind === order[i] && !saidBelow(problems[cap])) {
+          return { kind: problems[cap].kind, status: problems[cap].status, reason: problems[cap].reason, capability: cap, daily: Boolean(problems[cap].daily), seq: problems[cap].seq, partial: partial() };
         }
       }
     }
@@ -382,8 +452,8 @@
    * into them. A Marketplace product's own allowance is the exception. An
    * upstream failure is not: one feed can be down while the others answer.
    */
-  function keyWideProblem(cap) {
-    var p = problems[cap];
+  function keyWideProblem(cap, map) {
+    var p = (map || problems)[cap];
     if (!p) return false;
     if (p.kind === 'key') return true;
     if (p.kind !== 'quota') return false;
@@ -408,12 +478,14 @@
    */
   function clearKeyWide(capability, sent) {
     if (sent == null || MARKETPLACE[capability]) return;
-    for (var cap in problems) {
-      if (Object.prototype.hasOwnProperty.call(problems, cap) && keyWideProblem(cap) && problems[cap].seq <= sent) {
-        delete problems[cap];
-        notify(cap);
+    [problems, said].forEach(function (map) {
+      for (var cap in map) {
+        if (Object.prototype.hasOwnProperty.call(map, cap) && keyWideProblem(cap, map) && map[cap].seq <= sent) {
+          delete map[cap];
+          notify(cap);
+        }
       }
-    }
+    });
   }
 
   // The latest send mark of a request that was served: whatever was refused
@@ -491,10 +563,16 @@
    * another request would be refused the same way; shell/options.js asks
    * before it sends four of them at once.
    */
+  //
+  // The screen's own count too: a spent minute is the key's, whichever line
+  // says so.
   function keyWide() {
-    for (var cap in problems) {
-      if (Object.prototype.hasOwnProperty.call(problems, cap) && keyWideProblem(cap)) {
-        return { kind: problems[cap].kind, status: problems[cap].status, capability: cap };
+    var maps = [problems, said];
+    for (var m = 0; m < maps.length; m++) {
+      for (var cap in maps[m]) {
+        if (Object.prototype.hasOwnProperty.call(maps[m], cap) && keyWideProblem(cap, maps[m])) {
+          return { kind: maps[m][cap].kind, status: maps[m][cap].status, capability: cap };
+        }
       }
     }
     return null;
@@ -505,12 +583,14 @@
   // settles them. Without the `online` listener "You are offline" stayed up
   // after the connection returned until the next click.
   function clearNetworkProblems() {
-    for (var cap in problems) {
-      if (Object.prototype.hasOwnProperty.call(problems, cap) && problems[cap].kind === 'upstream' && !problems[cap].status) {
-        delete problems[cap];
-        notify(cap);
+    [problems, said].forEach(function (map) {
+      for (var cap in map) {
+        if (Object.prototype.hasOwnProperty.call(map, cap) && map[cap].kind === 'upstream' && !map[cap].status) {
+          delete map[cap];
+          notify(cap);
+        }
       }
-    }
+    });
   }
   if (typeof window !== 'undefined' && window.addEventListener) {
     window.addEventListener('online', clearNetworkProblems);
@@ -526,6 +606,7 @@
   function reset() {
     state = {};
     problems = {};
+    said = {};
     listeners = [];
     seq = 0;
     served = 0;
@@ -542,6 +623,7 @@
     anyDenied: anyDenied,
     anyAllowed: anyAllowed,
     problem: problem,
+    partial: partial,
     keyWide: keyWide,
     mark: mark,
     setSilent: setSilent,

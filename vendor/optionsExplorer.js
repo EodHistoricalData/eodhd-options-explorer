@@ -401,10 +401,18 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
         // Pointed to only for a refusal or no answer: an error of EODHD's
         // (500) or an answer it could not read is named here, not "did not
         // answer for this key" under a panel reading HTTP 500.
-        const explained = !f.limited && !f.unreadable && !(f.status >= 500) && window.Entitlement && window.Entitlement.explained && window.Entitlement.explained();
+        const hostPanel = Boolean(window.Entitlement && window.Entitlement.explained && window.Entitlement.explained());
+        const explained = !f.limited && !f.unreadable && !(f.status >= 500) && hostPanel;
+        // EODHD's error on the chain itself under the host's panel, which
+        // names it: the view points to the panel as the other screens do,
+        // with its Try again, instead of a second message for one failure.
+        // With no such panel (the terminal) it is named
+        // here, as before.
+        const yields = !f.limited && !f.unreadable && f.status >= 500 && hostPanel;
         setOptionsData({ empty: true, retry: true, failed: f, message: explained
           ? 'The options feed did not answer for this key — see the panel above. This is not a statement about ' + symbol.split('.')[0] + '.'
-          : window.RateLimitWait.failText('The options chain for ' + symbol.split('.')[0], f) });
+          : yields ? 'Nothing below is missing data — the request was not served. See the panel above.'
+            : window.RateLimitWait.failText('The options chain for ' + symbol.split('.')[0], f) });
       } else {
         // Pages not served are worth a retry; a chain that came back whole
         // and empty is an answer.
@@ -846,6 +854,10 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
   // so each reload armed the next, and a later page that kept answering 429
   // had the four pages asked for again after every wait, for ever.
   const chainRetry = selectedSymbol ? () => { retryFocusRef.current = true; selectTicker(selectedSymbol.symbol, selectedSymbol.name); } : null;
+  // The tools that say a part not loaded themselves (with chainRetry); the
+  // others -- Chain, Calculator, Payoff Builder, AI Advisor -- get the same
+  // line above them from here.
+  const OWN_PART_LINE = ['gex', 'unusual', 'iv'];
   const chainReload = selectedSymbol && autoReloadLeftRef.current > 0 ? () => {
     const sel = selectedRef.current;
     if (!sel || autoReloadLeftRef.current < 1) return;
@@ -1683,6 +1695,22 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
                   </button>
                 ))}
               </div>
+              {/* Part of the chain did not load (a later page at 500, a drop,
+                  a timeout, an answer that could not be read, the limit): the
+                  Chain tab said nothing -- only "Later dates" stayed -- while
+                  GEX, Unusual and the IV surface said it, and the open apps'
+                  panel no longer does (the view reports it). Every tool that
+                  works on the loaded part says it here, above its content,
+                  with the same line and Try again as those three, which draw
+                  their own. */}
+              {optionsData.partFail && OWN_PART_LINE.indexOf(optionsTab) === -1 && (
+                <div data-opt-part-fail={optionsTab}>
+                  <window.RateLimitWait.FailNote what="Part of the options chain" failure={window.RateLimitWait.failure(optionsData.partFail)}
+                    onRetry={chainRetry} onReload={chainReload} autoRetry={Boolean(chainReload)} isDark={isDark} panel={'options-' + optionsTab + '-part'}
+                    extra="The expiries and contracts below are from the part that loaded."
+                    style={{ fontSize: 12, marginBottom: 12 }} />
+                </div>
+              )}
               {optionsTab === 'chain' && renderOptionsChain()}
               {optionsTab === 'calculator' && React.createElement(window.OptionsCalculator, { optionsData, currentPrice, isDark, apiKey })}
               {optionsTab === 'payoff' && React.createElement(window.PayoffBuilder, { optionsData, currentPrice, isDark, apiKey })}

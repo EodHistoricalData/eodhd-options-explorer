@@ -191,6 +191,10 @@
    * No sort: a window narrow enough to hold one expiry fits inside a page, so
    * ordering costs a second or two and buys nothing.
    */
+  //
+  // Its failure is the screen's to say (`owned`): an expiry picked says it
+  // under the dates with a Try again, and one refetched for the chain is
+  // part of the chain's partFail.
   API.getOptionsExpiry = function (_k, symbol, date) {
     var underlying = usUnderlying(symbol);
     return API._request(['mp', 'unicornbay', 'options', 'contracts'], {
@@ -198,7 +202,7 @@
       'filter[exp_date_from]': date,
       'filter[exp_date_to]': date,
       'page[limit]': OPTIONS_PAGE_SIZE,
-    }, { why: true }).then(function (body) {
+    }, { why: true, owned: true }).then(function (body) {
       // Not served: the expiry with what failed (`notServed`), as the
       // terminal's client answers, so the view keeps what it has, says why
       // and asks again on Try again. A body that is no contract list
@@ -253,13 +257,13 @@
     // Not served -- no answer, a refusal, the limit, a body that is no
     // contract list -- is no dates with what failed (`failed`, not
     // enumerable), as the terminal's client answers: it read "No later
-    // dates".
+    // dates". The view says it under the dates, with a Try again (`owned`).
     var notServed = function (why) {
       var none = [];
       Object.defineProperty(none, 'failed', { value: why || {}, enumerable: false });
       return none;
     };
-    return API._request(['mp', 'unicornbay', 'options', 'contracts'], params, { why: true }).then(function (body) {
+    return API._request(['mp', 'unicornbay', 'options', 'contracts'], params, { why: true, owned: true }).then(function (body) {
       if (!body || body.notServed) return notServed(body && body.notServed);
       if (!Array.isArray(body.data)) return notServed({ status: 200, unreadable: true });
       var seen = [];
@@ -422,6 +426,15 @@
   function loadChain(symbol, underlying, from, probeFirst) {
     var pages = [];
     for (var page = 0; page < OPTIONS_PAGES; page++) pages.push(page);
+    // A later page that fails is the screen's to say only when the chain
+    // reports it: as its partFail, which it carries when the first page
+    // came back as a list with contracts in it (below), and which the
+    // views say with their own Try again. Otherwise -- the first page not
+    // served, unreadable, empty, or not back yet -- the chain says nothing
+    // of that page, and the panel does: a later page owned while the first
+    // was still out went without a word when the first then failed.
+    var firstPage = null;
+    var laterOwned = function () { return firstPage === 'contracts'; };
     // A page: its body, or { notServed } with why it was not served (the
     // status; `unreadable` for a body that is not JSON).
     var fetchPage = function (page) {
@@ -437,7 +450,13 @@
         'page[offset]': page * OPTIONS_PAGE_SIZE,
       };
       // `why`: a page not served says why instead of answering null.
-      return API._request(segments, params, { why: true }).then(function (body) { return body || { notServed: {} }; });
+      // `owned`: see laterOwned; the first page is the chain itself, and its
+      // failure the panel's.
+      return API._request(segments, params, { why: true, owned: page > 0 ? laterOwned : false }).then(function (body) {
+        var b = body || { notServed: {} };
+        if (page === 0) firstPage = listed(b) && b.data.length ? 'contracts' : 'none';
+        return b;
+      });
     };
     var served = function (b) { return Boolean(b) && !b.notServed; };
     // Served AND a list of contracts. A 200 with another shape -- an error

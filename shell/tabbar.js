@@ -11,11 +11,14 @@
  * So, for every such bar on the page, whichever view drew it:
  *  - the side that has more is named on the bar (data-mi-more="start end"),
  *    and the stylesheet fades that side out;
- *  - a plain turn of the wheel over the bar scrolls it sideways until it
- *    reaches its end, and from there the page scrolls as before;
+ *  - a plain turn of the wheel that begins over the bar scrolls it sideways
+ *    until it reaches its end, and from there the page scrolls as before;
+ *    one that was already moving the page goes on moving it;
+ *  - Left and Right move the focus to the next tab, Home and End to the
+ *    first and the last, on every bar alike;
  *  - the open tab is brought wholly into view, clear of the fade, when it
  *    is chosen -- a click, the arrow keys, Tab -- and when a bar appears
- *    with it out of sight.
+ *    with it out of sight; so is the tab in focus.
  *
  * The bars are React's, so nothing here adds or moves an element: one
  * attribute on the bar, and listeners on the document.
@@ -130,6 +133,33 @@
     reveal(bar, a && a !== bar && bar.contains(a) ? a : bar.querySelector(OPEN), true);
   }
 
+  // The wheel gesture under way: the bar it began over (null: the page)
+  // and when its last event came. A bar drawn again while the gesture is
+  // under way hands it to whatever is under the pointer now.
+  var GESTURE_GAP = 250;
+  var gesture = null;
+  function gestureOf(bar) {
+    var now = Date.now();
+    var going = gesture && now - gesture.last < GESTURE_GAP && !(gesture.bar && !gesture.bar.isConnected);
+    if (going) gesture.last = now;
+    else gesture = { bar: bar, last: now };
+    return gesture.bar;
+  }
+
+  // The tabs of a bar the arrow keys move between: its buttons that can be
+  // pressed and are drawn, in order.
+  function tabsOf(bar) {
+    var out = [];
+    var all = bar.querySelectorAll('button, [role="tab"]');
+    for (var i = 0; i < all.length; i++) {
+      var t = all[i];
+      if (barOf(t) !== bar || t.disabled || t.getAttribute('aria-disabled') === 'true') continue;
+      if (t.closest && t.closest('[hidden]')) continue;
+      out.push(t);
+    }
+    return out;
+  }
+
   var chosen = [];
   var queued = false;
 
@@ -210,10 +240,21 @@
     // A mouse wheel turns vertically. Over a bar with more tabs it moves the
     // tabs; at the bar's end, or for a sideways gesture (a trackpad, Shift
     // and the wheel), the browser does what it always did.
+    //
+    // Only a turn that begins over the bar, though. Every turn over a bar
+    // that could still scroll was taken, and so a page being scrolled
+    // stopped dead when a bar slid under a pointer that had not moved: the
+    // calendar at 390 px took seven notches and the News bar four, the bar
+    // moving 210 px sideways and the open tab off its edge. A gesture -- the
+    // notches of one spin, a trackpad's swipe and the momentum after it --
+    // is the run of wheel events less than GESTURE_GAP apart, and it stays
+    // with what it began over: the page, or one bar. After a pause the next
+    // turn begins anew wherever the pointer is.
     document.addEventListener('wheel', function (e) {
-      if (e.defaultPrevented || e.ctrlKey) return;
       var bar = barOf(e.target);
-      if (!bar) return;
+      var over = gestureOf(bar);
+      if (e.defaultPrevented || e.ctrlKey) return;
+      if (!bar || over !== bar) return;
       letGo(bar);
       if (e.shiftKey || Math.abs(e.deltaX) >= Math.abs(e.deltaY)) return;
       var max = room(bar);
@@ -225,6 +266,32 @@
       bar.scrollLeft = Math.max(0, Math.min(max, x + step));
       settle(bar);
     }, { passive: false });
+
+    // Left and Right: the next tab, round from either end; Home and End: the
+    // first and the last. The focus moves and the tab is shown whole
+    // (focusin, above); what the tab does is still Enter's or Space's. The
+    // bars of toggles -- the heatmap's indexes, the calendar's event types,
+    // the News categories -- had no keys of their own, so the arrows
+    // scrolled the strip and the tab in focus went off its edge. The
+    // tablists that move between tabs themselves (and choose them as they
+    // go) have done so by the time the key gets here, and are left to it.
+    document.addEventListener('keydown', function (e) {
+      if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'Home' && e.key !== 'End') return;
+      var bar = barOf(e.target);
+      if (!bar || e.target === bar) return;
+      var tabs = tabsOf(bar);
+      var at = -1;
+      for (var i = 0; i < tabs.length; i++) if (tabs[i] === e.target || tabs[i].contains(e.target)) at = i;
+      if (at === -1) return;
+      var n = tabs.length;
+      var to = e.key === 'Home' ? 0 : e.key === 'End' ? n - 1
+        : (at + (e.key === 'ArrowRight' ? 1 : n - 1)) % n;
+      e.preventDefault();
+      if (to === at) return;
+      var next = tabs[to];
+      try { next.focus({ preventScroll: true }); } catch (_) { next.focus(); }
+    });
 
     // A web font arriving widens the labels without resizing the bar.
     if (document.fonts && document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', soon);

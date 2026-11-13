@@ -198,6 +198,10 @@
     var P = palette(props && props.theme);
     var p = (props && props.problem) || {};
     var title, lines, link;
+    // "Nothing below is missing data" only while it is true: not while a
+    // screen below names a failure of its own (p.partial) -- part of the
+    // options chain, a position without a price.
+    var whole = function (words) { return p.partial ? '' : words; };
     var wait = useLimitWait();
     // When the wait it counted is over, a screen reader is told once; the
     // count itself is outside the live region (it changes every second).
@@ -228,8 +232,8 @@
       lines = [
         'The server sent the key from .env and eodhd.com answered 401'
           + (p.reason ? ' — ' + quoted(p.reason) : '') + '.',
-        'Check EODHD_API_KEY in .env for a typo or an expired key, then restart the server. '
-          + 'Nothing below is missing data; the requests were refused before any data was read.',
+        'Check EODHD_API_KEY in .env for a typo or an expired key, then restart the server.'
+          + whole(' Nothing below is missing data; the requests were refused before any data was read.'),
       ];
       link = { href: links('/cp/settings/api', 'key'), text: 'Your API key at eodhd.com' };
     } else if (p.kind === 'quota' && p.status === 429) {
@@ -244,14 +248,14 @@
       lines = [
         sentence(p.reason)
           + 'EODHD limits how many requests a key may make per minute, as well as per day.',
-        'Nothing below is missing data — the requests were not served.',
+        whole('Nothing below is missing data — the requests were not served.'),
       ];
       if (wait) {
         waitLine = left
           ? 'Requests resume in ' + left + ' s.'
           : overLine(retry);
       } else {
-        lines[1] += ' Wait a minute and reload.';
+        lines[1] = (lines[1] + ' Wait a minute and reload.').trim();
       }
       link = null;
     } else if (p.kind === 'quota') {
@@ -267,15 +271,15 @@
           + (MARKETPLACE[p.capability] && !p.daily
             ? 'This Marketplace product’s allowance is spent. It runs for 24 hours from the product’s first request, so it frees up as that window rolls on.'
             : 'Today’s API request limit for this key is used up; the counter resets at midnight UTC.'),
-        'Nothing below is missing data — the requests were not served. Reload after the reset, '
-          + 'or move to a plan with a higher limit.',
+        whole('Nothing below is missing data — the requests were not served. ')
+          + 'Reload after the reset, or move to a plan with a higher limit.',
       ];
       link = { href: links('/pricing', 'quota'), text: 'See EODHD plans' };
     } else if (!p.status && offline()) {
       title = 'You are offline';
       lines = [
         'This browser has no network connection, so the request never reached eodhd.com.',
-        'Nothing below is missing data. Reload once you are back online.',
+        whole('Nothing below is missing data. ') + 'Reload once you are back online.',
       ];
       link = null;
     } else {
@@ -283,10 +287,13 @@
       lines = [
         (p.status ? 'eodhd.com returned HTTP ' + p.status : 'The request to eodhd.com did not complete')
           + (p.reason ? ' — ' + quoted(p.reason) : '') + '.',
-        'This is usually a bad minute upstream. Nothing below is missing data; reload in a moment.',
+        p.partial
+          ? 'This is usually a bad minute upstream; reload in a moment.'
+          : 'This is usually a bad minute upstream. Nothing below is missing data; reload in a moment.',
       ];
       link = null;
     }
+    lines = lines.filter(Boolean);
 
     // The title and the reason are the live region, read when the panel
     // appears; the count after them changes every second and is not in it.

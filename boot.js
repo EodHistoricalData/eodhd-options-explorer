@@ -10,7 +10,8 @@ window.APP_META = {
   "keyNote": "The options chain needs the Options Data Feed, a paid add-on. On a key without it the app opens and says, in EODHD's own words, that the chain is not in your plan.",
   "storage": [
     "eodhd_oss_chain:"
-  ]
+  ],
+  "ownFailures": []
 };
 
 if (!window.React || !window.ReactDOM) {
