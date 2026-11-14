@@ -192,9 +192,10 @@
    * ordering costs a second or two and buys nothing.
    */
   //
-  // Its failure is the screen's to say (`owned`): an expiry picked says it
-  // under the dates with a Try again, and one refetched for the chain is
-  // part of the chain's partFail.
+  // Its failure is the screen's to say where the app says so (meta.json
+  // ownFailures, API._own): an expiry picked says it under the dates with a
+  // Try again, and one refetched for the chain is part of the chain's
+  // partFail.
   API.getOptionsExpiry = function (_k, symbol, date) {
     var underlying = usUnderlying(symbol);
     return API._request(['mp', 'unicornbay', 'options', 'contracts'], {
@@ -202,7 +203,7 @@
       'filter[exp_date_from]': date,
       'filter[exp_date_to]': date,
       'page[limit]': OPTIONS_PAGE_SIZE,
-    }, { why: true, owned: true }).then(function (body) {
+    }, Object.assign({ why: true }, API._own('getOptionsExpiry'))).then(function (body) {
       // Not served: the expiry with what failed (`notServed`), as the
       // terminal's client answers, so the view keeps what it has, says why
       // and asks again on Try again. A body that is no contract list
@@ -263,7 +264,7 @@
       Object.defineProperty(none, 'failed', { value: why || {}, enumerable: false });
       return none;
     };
-    return API._request(['mp', 'unicornbay', 'options', 'contracts'], params, { why: true, owned: true }).then(function (body) {
+    return API._request(['mp', 'unicornbay', 'options', 'contracts'], params, Object.assign({ why: true }, API._own('getMoreOptionsExpirations'))).then(function (body) {
       if (!body || body.notServed) return notServed(body && body.notServed);
       if (!Array.isArray(body.data)) return notServed({ status: 200, unreadable: true });
       var seen = [];
@@ -318,7 +319,14 @@
     var from = new Date().toISOString().slice(0, 10);
     var cacheKey = underlying + ' ' + from;
     var hit = chainCache[cacheKey];
-    if (hit && Date.now() - hit.at < CHAIN_TTL_MS) return hit.promise;
+    // A chain still loading is joined, and is now this screen's: its steps
+    // still to come are taken for it (wanted, below).
+    latestChain = cacheKey;
+    if (hit && Date.now() - hit.at < CHAIN_TTL_MS) {
+      hit.screen = API.screen();
+      hit.heading = headingSays(symbol);
+      return hit.promise;
+    }
     // A reload used to pay the ~70 units again: the answer is
     // also kept in localStorage for the same quarter of an hour.
     var stored = readStoredChain(cacheKey);
@@ -326,8 +334,22 @@
       chainCache[cacheKey] = { at: stored.at, promise: Promise.resolve(stored.env) };
       return chainCache[cacheKey].promise;
     }
-    var promise = loadChain(symbol, underlying, from, planRefused);
-    chainCache[cacheKey] = { at: Date.now(), promise: promise };
+    var entry = { at: Date.now(), promise: null, screen: API.screen(), heading: headingSays(symbol) };
+    // Whether the screen that asked -- or the last one that joined -- is
+    // still the one on the page, and still on this ticker. A step after the
+    // first pages is taken only while it is: after leaving the options
+    // screen while the first page was loading, the expiry at a page
+    // boundary was still asked for; and after the explorer's own Change, or
+    // another ticker picked in it, which mount nothing afresh. The ticker
+    // is read where the explorer shows it (its heading), when it showed it
+    // as the chain was asked; another chain asked since is another ticker.
+    var wanted = function () {
+      if (entry.screen !== API.screen() || latestChain !== cacheKey) return false;
+      return !entry.heading || headingSays(symbol) === true;
+    };
+    var promise = loadChain(symbol, underlying, from, planRefused, wanted);
+    entry.promise = promise;
+    chainCache[cacheKey] = entry;
     // A failure or an empty answer is not kept: the next try asks again.
     // An empty answer was served, though, and forgets the refusals as a
     // chain does.
@@ -335,7 +357,8 @@
       var failed = !env || Boolean(env.notServed);
       var empty = !failed && !(env.data && env.data.length);
       // Part of it not served (partFail): shown, not kept, so Try again asks.
-      var partial = !failed && Boolean(env.partFail);
+      // Nor one whose last steps were not taken (`left`): nobody was there.
+      var partial = !failed && (Boolean(env.partFail) || Boolean(env.left));
       if (failed || empty || partial) delete chainCache[cacheKey];
       if (failed) {
         if (window.Entitlement && window.Entitlement.get('options').allowed === false) refusedChains[underlying] = true;
@@ -403,6 +426,22 @@
 
   var CHAIN_TTL_MS = 15 * 60 * 1000;
   var chainCache = {};
+  // The chain asked for last: the one the explorer is on.
+  var latestChain = null;
+  /**
+   * Whether the explorer's heading names this ticker: true, false when it
+   * names another, null when there is none (Change put the ticker away, or
+   * no explorer is on the page). The heading is the
+   * ticker's code before its suffix, as the explorer writes it.
+   */
+  function headingSays(symbol) {
+    if (typeof document === 'undefined' || !document.querySelector) return null;
+    var el = document.querySelector('[data-opt-symbol-heading]');
+    if (!el) return null;
+    var first = el.querySelector('span') || el;
+    var shown = String(first.textContent || '').trim().toUpperCase();
+    return shown === String(symbol || '').split('.')[0].trim().toUpperCase();
+  }
   // Underlyings whose chain the plan refused, until a chain is served.
   var refusedChains = {};
   API._refusedChains = refusedChains;
@@ -423,7 +462,10 @@
    * other symbol -- one request, not four, to find out whether this one is
    * refused too. The ordinary load stays one fan, with no extra round trip.
    */
-  function loadChain(symbol, underlying, from, probeFirst) {
+  // `wanted`: whether the screen that asked is still on the page (see
+  // getOptionsChain); without it, every step is taken.
+  function loadChain(symbol, underlying, from, probeFirst, wanted) {
+    var still = typeof wanted === 'function' ? wanted : function () { return true; };
     var pages = [];
     for (var page = 0; page < OPTIONS_PAGES; page++) pages.push(page);
     // A later page that fails is the screen's to say only when the chain
@@ -432,9 +474,11 @@
     // views say with their own Try again. Otherwise -- the first page not
     // served, unreadable, empty, or not back yet -- the chain says nothing
     // of that page, and the panel does: a later page owned while the first
-    // was still out went without a word when the first then failed.
+    // was still out went without a word when the first then failed. While
+    // the first is out it cannot tell (undefined), and the panel waits: it
+    // came up at once, and went when the first came with contracts.
     var firstPage = null;
-    var laterOwned = function () { return firstPage === 'contracts'; };
+    var laterOwned = function () { return firstPage === null ? undefined : firstPage === 'contracts'; };
     // A page: its body, or { notServed } with why it was not served (the
     // status; `unreadable` for a body that is not JSON).
     var fetchPage = function (page) {
@@ -452,12 +496,14 @@
       // `why`: a page not served says why instead of answering null.
       // `owned`: see laterOwned; the first page is the chain itself, and its
       // failure the panel's.
-      return API._request(segments, params, { why: true, owned: page > 0 ? laterOwned : false }).then(function (body) {
+      var mine = page > 0 ? API._own('getOptionsChain', null, laterOwned) : { owned: false };
+      return API._request(segments, params, Object.assign({ why: true }, mine)).then(function (body) {
         var b = body || { notServed: {} };
         if (page === 0) firstPage = listed(b) && b.data.length ? 'contracts' : 'none';
         return b;
       });
     };
+    var leftEarly = false;
     var served = function (b) { return Boolean(b) && !b.notServed; };
     // Served AND a list of contracts. A 200 with another shape -- an error
     // envelope such as {"message": "temporarily unavailable"} -- is not "no
@@ -467,6 +513,9 @@
       ? fetchPage(0).then(function (first) {
         if (!listed(first)) return [first];
         if (first.data.length < OPTIONS_PAGE_SIZE) return [first];
+        // The rest only for a screen still there; the first page is shown
+        // as part of the chain, and not kept.
+        if (!still()) { leftEarly = true; return [first]; }
         return Promise.all(pages.slice(1).map(fetchPage)).then(function (rest) { return [first].concat(rest); });
       })
       : Promise.all(pages.map(fetchPage));
@@ -478,6 +527,7 @@
       // and nothing is known.
       if (!served(bodies[0])) return notServedChain(symbol, bodies[0] && bodies[0].notServed);
       if (!listed(bodies[0])) return notServedChain(symbol, { unreadable: true });
+      if (leftEarly) return Object.assign(optionsEnvelope(symbol, bodies[0].data), { complete: false, left: true });
       var pagesData = bodies.map(function (b) { return listed(b) ? b.data : []; });
       if (!pagesData[0].length) return Object.assign(optionsEnvelope(symbol, []), { complete: true });
       // Whole, when every page answered and the last one was not full: there
@@ -515,6 +565,9 @@
       // mid-expiry, are fetched again whole, one request each, in parallel.
       var redo = expiriesToRefetch(pagesData, cut);
       if (!redo.length) return mark(Object.assign(optionsEnvelope(symbol, rows), { complete: whole }));
+      // The screen that asked is gone: the expiries are not asked for, and
+      // what came is not kept (`left`).
+      if (!still()) return mark(Object.assign(optionsEnvelope(symbol, rows), { complete: false, left: true }));
       return Promise.all(redo.map(function (date) {
         return API.getOptionsExpiry(null, symbol, date).then(function (entry) {
           return { date: date, entry: entry };

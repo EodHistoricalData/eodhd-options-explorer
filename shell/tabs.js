@@ -24,6 +24,14 @@
     var state = React.useState(0);
     var active = state[0];
     var setActive = state[1];
+    // Another tab opened: the screen of the last one is left, and nothing
+    // more is asked for it (EODHD_API.screen).
+    React.useEffect(function () {
+      return function () {
+        var api = window.EODHD_API;
+        if (api && api.leaveScreen) api.leaveScreen();
+      };
+    }, [active]);
 
     if (tabs.length < 2) return tabs.length ? tabs[0].render() : null;
 

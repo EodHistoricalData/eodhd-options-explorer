@@ -307,16 +307,74 @@ window.RateLimitWait = (function () {
     return e;
   }
 
+  // Whether a host's own panel above the screens (the open apps' frame)
+  // says this failure already: the key refused (401); the day's requests
+  // spent, or the plan refusing a feed (402). A line naming it beside the
+  // panel was a second message about one failure -- the calendar's company
+  // names at 401. The terminal has no such panel, and its lines say
+  // it. A 403 and EODHD's errors are the lines' to say as before.
+  function hostSaysKey(f) {
+    if (!f || f.limited || f.unreadable || (f.status !== 401 && f.status !== 402)) return false;
+    var E = window.Entitlement;
+    if (!E) return false;
+    try {
+      var p = typeof E.problem === 'function' ? E.problem() : null;
+      if (f.status === 401) return Boolean(p && (p.kind === 'key' || p.status === 401));
+      return Boolean((typeof E.anyDenied === 'function' && E.anyDenied()) || (p && p.status === 402));
+    } catch (_) { return false; }
+  }
+  // Where the host's panel says the reason, a line that says more than the
+  // failure (a form's "Enter what you paid") points to it instead.
+  var PANEL_SAYS = 'see the panel above.';
+
+  // What the host's panel says about the key and the day, for a view that
+  // reads hostSaysKey (or ExchangeStatus.refusalText) while it draws: the
+  // view draws again when that changes. A line left out under the panel did
+  // not come back when the panel cleared -- a later request was served, and
+  // the failure, its live announcement and its Try again stayed absent
+  // until something else redrew it. The open apps' frame
+  // tells of every change through Entitlement.subscribe(); only a change of
+  // what it says of the key (401) or the day (402) draws again, not every
+  // answer. With no Entitlement (the terminal) nothing is subscribed.
+  function hostKeyState() {
+    return (hostSaysKey({ status: 401 }) ? 'k' : '-') + (hostSaysKey({ status: 402 }) ? 'd' : '-');
+  }
+  function useHostPanel() {
+    var R = window.React;
+    var s = R.useState(hostKeyState);
+    R.useEffect(function () {
+      var E = window.Entitlement;
+      if (!E || typeof E.subscribe !== 'function') return undefined;
+      var check = function () { var now = hostKeyState(); s[1](function (was) { return was === now ? was : now; }); };
+      var off = E.subscribe(check);
+      check();
+      return typeof off === 'function' ? off : undefined;
+    }, []);
+    return s[0];
+  }
+  // A failure's reason inside other words, kept as the failure and not as a
+  // sentence: a form's note made of a string pointed to a panel that had
+  // gone, or named a refused key the panel had taken over. props: failure,
+  // before, after; or what (failText's subject) and after.
+  function Reason(props) {
+    useHostPanel();
+    var f = props.failure;
+    var text = props.what != null ? failText(props.what, f) : (props.before || '') + failReason(f);
+    return window.React.createElement(window.React.Fragment, null, text + (props.after || ''));
+  }
+
   // The sentence for a failure, `what` first ("The price history"): the
   // limit, a refusal, EODHD's own error, or no answer -- never "no data".
   function failText(what, f) {
     var w = what || 'The data';
+    if (hostSaysKey(f)) return w + ' did not load: ' + PANEL_SAYS;
     if (f && (f.status === 402 || f.status === 403) && !f.limited && !f.unreadable) return w + ' is not included in this plan (' + f.status + ').';
     return w + ' did not load' + (f ? ': ' + failReason(f) : '.');
   }
   // The reason alone, for a screen with words of its own before it.
   function failReason(f) {
     if (!f) return 'EODHD did not answer, or the connection dropped.';
+    if (hostSaysKey(f)) return PANEL_SAYS;
     if (f.limited) return REACHED;
     if (f.unreadable) return UNREADABLE;
     if (f.status === 401) return 'EODHD did not accept the API key (401).';
@@ -495,6 +553,9 @@ window.RateLimitWait = (function () {
   // isDark, text (instead of failText), label, style, buttonStyle, autoRetry
   // (false: the button only), extra (a sentence after the reason),
   // ownFocus (true: the view puts the focus back itself after a retry),
+  // ownFail (data-own-fail: which request the line names the failure of
+  // itself -- "exchange-hours", "fundamentals", "quotes", "history" -- for
+  // the open apps' shell, which keeps its panel out of what a line says),
   // busyKey (the work its retry runs, as RetryButton's), onReload (the
   // reload after the wait when it is not a press -- a view that keeps a
   // budget for it; onRetry when absent).
@@ -554,12 +615,13 @@ window.RateLimitWait = (function () {
   // down (and the note of a press it held), and, when the limit was why, the
   // same reload once the wait is over as a FailNote's.
   // props: failure (failure()), onRetry, panel (the name its reloads are
-  // paced by), isDark, label, style.
+  // paced by), isDark, label, style, busyKey (as RetryButton's: "Loading…"
+  // while the search it asked again is out).
   function RetryAfterWait(props) {
     var C3 = window.C3 || {};
     useReloadAfterWait(props.failure, props.onRetry, props.panel);
     return window.React.createElement(RetryButton, {
-      isDark: props.isDark, label: props.label, onClick: props.onRetry, 'data-retry-focus': 'true',
+      isDark: props.isDark, label: props.label, onClick: props.onRetry, 'data-retry-focus': 'true', busyKey: props.busyKey,
       style: Object.assign({ padding: '4px 12px', minHeight: 32, borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600,
         background: 'none', border: '1px solid ' + (props.isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.25)'),
         color: props.isDark ? (C3.textDark || '#E0E3EB') : (C3.textLightTheme || '#1e1b4b') }, props.style),
@@ -569,6 +631,7 @@ window.RateLimitWait = (function () {
   function FailNote(props) {
     var R = window.React;
     var f = props.failure;
+    useHostPanel();
     var w = useWait();
     var panel = props.panel || props.what || props.text;
     // `panel`: the name its automatic reloads are paced by (useReloadAfterWait).
@@ -581,9 +644,13 @@ window.RateLimitWait = (function () {
     // press's note after it counts down every second, so it is outside
     // and said once by the wait itself.
     var words = (props.text || failText(props.what, f)) + (props.extra ? ' ' + props.extra : '');
+    // A refused key or a spent day the host's panel says already: nothing
+    // here (one failure, one message). The terminal draws it as before.
+    if (hostSaysKey(f)) return null;
     return R.createElement('div', {
       ref: boxRef,
       'data-rl-fail': f && f.limited ? 'limit' : 'other',
+      'data-own-fail': props.ownFail || undefined,
       style: Object.assign({ fontSize: 13, lineHeight: 1.5, color: props.isDark ? (C3.textDark || '#E0E3EB') : (C3.textLightTheme || '#1e1b4b') }, props.style),
     },
       R.createElement('span', { role: 'status' }, words),
@@ -601,7 +668,8 @@ window.RateLimitWait = (function () {
     until: until, secondsLeft: secondsLeft, note: note, useWait: useWait, useCause: useCause,
     parseRetryAfter: parseRetryAfter, REACHED: REACHED, UNREADABLE: UNREADABLE, HELD: HELD, OVER: OVER,
     announce: announce, unreadableError: unreadableError, notData: notData, label: label, waitLook: waitLook,
-    RetryButton: RetryButton, failure: failure, failText: failText, failReason: failReason, outage: outage,
+    RetryButton: RetryButton, failure: failure, failText: failText, failReason: failReason, outage: outage, hostSaysKey: hostSaysKey,
+    useHostPanel: useHostPanel, Reason: Reason,
     setBusy: setBusy, endBusy: endBusy, busyOf: busyOf, useBusy: useBusy,
     useReloadAfterWait: useReloadAfterWait, FailNote: FailNote, RetryAfterWait: RetryAfterWait, JOIN_MS: JOIN_MS, joins: joins, focusOnRetry: focusOnRetry,
     // The nearest heading before an element that is still on the page, for

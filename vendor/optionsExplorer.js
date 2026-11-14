@@ -74,6 +74,9 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
 
   const [selectedSymbol, setSelectedSymbol] = useState(null);
   const [optionsData, setOptionsData] = useState(null);
+  // Drawn again when what a host's panel says of the key or the day
+  // changes: the part-of-the-chain line and the chain's message follow it.
+  window.RateLimitWait.useHostPanel();
   const [loading, setLoading] = useState(false);
   const [selectedExpiry, setSelectedExpiry] = useState(null);
   // The symbol search turns the browser's outline off and drew nothing in its
@@ -408,11 +411,17 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
         // with its Try again, instead of a second message for one failure.
         // With no such panel (the terminal) it is named
         // here, as before.
-        const yields = !f.limited && !f.unreadable && f.status >= 500 && hostPanel;
+        // The limit too: at a 429 the panel read "Too many requests" and the
+        // line under it the limit again, with no word of the panel. And the
+        // line keeps its ticker and its reason: it read the panel's own
+        // "Nothing below is missing data …" under "Options did not load",
+        // the phrase twice and "for AAPL" gone.
+        const yields = !f.unreadable && (f.limited || f.status >= 500) && hostPanel;
+        const chainFailed = window.RateLimitWait.failText('The options chain for ' + symbol.split('.')[0], f);
         setOptionsData({ empty: true, retry: true, failed: f, message: explained
           ? 'The options feed did not answer for this key — see the panel above. This is not a statement about ' + symbol.split('.')[0] + '.'
-          : yields ? 'Nothing below is missing data — the request was not served. See the panel above.'
-            : window.RateLimitWait.failText('The options chain for ' + symbol.split('.')[0], f) });
+          : yields ? chainFailed + ' See the panel above.'
+            : chainFailed });
       } else {
         // Pages not served are worth a retry; a chain that came back whole
         // and empty is an answer.
@@ -424,7 +433,9 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
       if (!current()) return;
       console.error('[OptionsExplorer] Load error:', e);
       const f = window.RateLimitWait.failure(e);
-      setOptionsData({ empty: true, retry: true, failed: f, message: (!f.limited && window.Entitlement && window.Entitlement.explained()) ? '' : window.RateLimitWait.failText('The options chain', f) });
+      // failText points to the host's panel when it says a refused key --
+      // worded when drawn (failWhat), so it follows the panel when it clears.
+      setOptionsData({ empty: true, retry: true, failed: f, failWhat: (!f.limited && window.Entitlement && window.Entitlement.explained()) ? null : 'The options chain', message: (!f.limited && window.Entitlement && window.Entitlement.explained()) ? '' : window.RateLimitWait.failText('The options chain', f) });
     }
     if (current()) setLoading(false);
   }, [apiKey]);
@@ -1649,7 +1660,7 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
               <div style={{ fontSize: '40px', marginBottom: '12px' }}>{React.createElement(Icon, { name: 'mail', size: 40 })}</div>
               <h3 data-opt-empty-heading="true" tabIndex={-1} style={{ fontWeight: '700', fontSize: '16px', marginBottom: '4px', outlineOffset: 2 }}>{optionsData.junk ? 'Not a ticker' : optionsData.index ? 'No index options' : optionsData.notUS ? 'US-listed underlyings only' : optionsData.failed ? 'Options did not load' : 'No Options Available'}</h3>
               <p role={optionsData.failed ? 'status' : undefined} style={{ color: isDark ? C3.textMutedDark : C3.textMutedLight, fontSize: '13px' }}>
-                {optionsData.message || 'This symbol does not have options data.'}
+                {(optionsData.failWhat ? window.RateLimitWait.failText(optionsData.failWhat, optionsData.failed) : optionsData.message) || 'This symbol does not have options data.'}
               </p>
               {/* Without it, a refused or failed chain could only be asked
                   for again by picking the ticker anew. It counts the limit's
@@ -1703,8 +1714,8 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
                   works on the loaded part says it here, above its content,
                   with the same line and Try again as those three, which draw
                   their own. */}
-              {optionsData.partFail && OWN_PART_LINE.indexOf(optionsTab) === -1 && (
-                <div data-opt-part-fail={optionsTab}>
+              {optionsData.partFail && OWN_PART_LINE.indexOf(optionsTab) === -1 && !window.RateLimitWait.hostSaysKey(window.RateLimitWait.failure(optionsData.partFail)) && (
+                <div data-opt-part-fail={optionsTab} data-own-fail="options-chain">
                   <window.RateLimitWait.FailNote what="Part of the options chain" failure={window.RateLimitWait.failure(optionsData.partFail)}
                     onRetry={chainRetry} onReload={chainReload} autoRetry={Boolean(chainReload)} isDark={isDark} panel={'options-' + optionsTab + '-part'}
                     extra="The expiries and contracts below are from the part that loaded."

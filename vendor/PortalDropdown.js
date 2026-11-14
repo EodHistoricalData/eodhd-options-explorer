@@ -154,6 +154,8 @@
   //   mouse); kb.target: the row Enter takes, the arrows' only (-1: none).
   //   search(query): the screen's own search, asked again for the text
   //   still in the field once a wait of the per-minute limit is over.
+  //   kb.searched(query): the screen's search for query answered; a Try
+  //   again under a failed search ends there.
   //   kb.say(text, { error }): the line for a search that failed (`error`:
   //   what it threw). At the limit, with `search`, the line names the limit
   //   and a Try again under it counts the wait down; the search is asked
@@ -183,21 +185,53 @@
     const [limited, setLimited] = React.useState(null);
     const limitedRef = React.useRef(null);
     limitedRef.current = limited;
-    React.useEffect(() => { setNoListing(null); setLimited(null); }, [query]);
+    // The search failed for EODHD's error, a dropped connection or an answer
+    // that could not be read: { failure, query }. The line had "Try again."
+    // as words with no button in Alerts, Compare and the Backtester, and
+    // Compare and the Backtester showed no list after the network came back
+    // until a letter was typed. Now a Try
+    // again under it asks the search again for the text, as the AI thesis
+    // search's does; it reads "Loading…" while that search is out.
+    const [outage, setOutage] = React.useState(null);
+    const outageRef = React.useRef(null);
+    outageRef.current = outage;
+    // A bare code the search lists only on other exchanges
+    // (SymbolCode.elsewhere): the line names them, each a button that picks
+    // it.
+    const [away, setAway] = React.useState(null);
+    const RLW = window.RateLimitWait;
+    const SC = window.SymbolCode;
+    // The search asked again by that Try again: { query, token }. It ends
+    // when that search does -- its failure said (kb.say) or its answer told
+    // (kb.searched) -- not when a render shows it out: an answer that came
+    // in the same batch as the "loading" update was never seen as out, and
+    // the button read "Loading…" for good over a list kept hidden.
+    const retryKey = 'search:' + listId;
+    const retryRef = React.useRef(null);
+    const endRetry = () => {
+      const r = retryRef.current;
+      retryRef.current = null;
+      if (r && r.token && RLW && RLW.endBusy) RLW.endBusy(retryKey, r.token);
+    };
+    React.useEffect(() => { setNoListing(null); setLimited(null); setOutage(null); setAway(null); endRetry(); }, [query]);
+    React.useEffect(() => () => endRetry(), []);
     const queryRef = React.useRef(query);
     queryRef.current = query;
     const searchRef = React.useRef(search);
     searchRef.current = search;
-    const RLW = window.RateLimitWait;
-    const SC = window.SymbolCode;
     // The line under the field; `limit` (failure()) when the limit is why
-    // and the wait can be counted down and asked again here.
-    const tell = (text, limit, redo) => {
+    // and the wait can be counted down and asked again here. more.outage:
+    // the failure a Try again asks again for; more.away: elsewhere()'s.
+    const tell = (text, limit, redo, more) => {
+      const m = more || {};
       setNoListing(text || null);
       setLimited(limit ? { failure: limit, query: queryRef.current, redo: redo || null } : null);
+      setOutage(text && m.outage ? { failure: m.outage, query: queryRef.current } : null);
+      setAway(text && m.away && m.away.rows && m.away.rows.length ? m.away : null);
     };
     const canCount = () => Boolean(RLW && RLW.RetryAfterWait && SC && SC.LIMIT_WORDS);
     const canWait = (redo) => canCount() && (typeof redo === 'function' || typeof searchRef.current === 'function');
+    const canRetry = () => Boolean(RLW && RLW.RetryAfterWait && RLW.outage && RLW.failText) && typeof searchRef.current === 'function';
     const limitFailure = (err) => Object.assign(RLW.failure(err || { rateLimited: true }), { limited: true, status: 429 });
     const sayNone = (q) => { const t = String(q == null ? '' : q).trim(); if (t) tell('No listing found for ' + t); };
     // Once the wait is over (or Try again after it): the search, for the
@@ -228,7 +262,7 @@
         if (seq !== resolveSeq.current || queryRef.current !== q) return;
         if (res && res.item) { resolveSeq.current++; onPick(res.item); }
         else if (res && res.note && res.limited && canCount()) tell(SC.LIMIT_WORDS, limitFailure(), () => runResolveRef.current(q, rows));
-        else if (res && res.note) tell(res.note);
+        else if (res && res.note) tell(res.note, null, null, { away: res.elsewhere });
       }, () => { if (seq === resolveSeq.current && queryRef.current === q) sayNone(q); });
     };
     runResolveRef.current = runResolve;
@@ -257,19 +291,42 @@
       const pick = best();
       if (pick) pickNow(pick);
       else if (resolve) runResolve(query, list);
-      else sayNone(query);
+      else noneFor(query);
     }, [list, query, answered]);
+    // Try again under a search that failed: the search for the text, asked
+    // once; "Loading…" until it answers or fails again.
+    const retrySearch = () => {
+      const o = outageRef.current;
+      if (!o || retryRef.current || queryRef.current !== o.query || typeof searchRef.current !== 'function') return;
+      retryRef.current = { query: o.query, token: RLW && RLW.setBusy ? RLW.setBusy(retryKey, 'retry') : null };
+      searchRef.current(o.query);
+    };
+    // The screen's search for `q` answered (kb.searched). When it was the
+    // one Try again asked: its list is the answer, the line goes, and the
+    // focus on its Try again goes back to the field.
+    const searched = (q) => {
+      const r = retryRef.current;
+      if (!r || (q != null && String(q) !== r.query)) return;
+      endRetry();
+      const a = typeof document !== 'undefined' ? document.activeElement : null;
+      if (a && a.closest && a.closest('[data-search-retry]')) {
+        const field = document.querySelector('[aria-controls="' + listId + '"]');
+        if (field) field.focus();
+      }
+      tell(null);
+    };
+    // A caller's codeOf names the code; the row's Exchange, else its
+    // symbol, the listing.
+    const symbolOfItem = codeOf
+      ? (it) => (it.Exchange ? codeOf(it) + '.' + it.Exchange : (it.symbol || codeOf(it)))
+      : undefined;
     const best = () => {
       if (active >= 0 && list[active]) return list[active];
       // The shared reader: a code typed with its exchange, class or "^"
       // takes that listing's row or none -- "BRK.B" took BRK.TO, "^GSPC"
       // GSPCX.US.
-      // A caller's codeOf names the code; the row's Exchange, else its
-      // symbol, the listing.
       if (window.SymbolCode && window.SymbolCode.bestRow) {
-        return window.SymbolCode.bestRow(list, query, codeOf
-          ? (it) => (it.Exchange ? codeOf(it) + '.' + it.Exchange : (it.symbol || codeOf(it)))
-          : undefined);
+        return window.SymbolCode.bestRow(list, query, symbolOfItem);
       }
       const q = String(query || '').trim().toUpperCase().split('.')[0];
       const code = codeOf || ((it) => String(it.symbol || it.code || '').split('.')[0]);
@@ -278,6 +335,24 @@
       const us = exact.find(it => /\.US$/i.test(String(it.symbol || '')) || String(it.Exchange || '').toUpperCase() === 'US');
       return us || exact[0] || list[0] || null;
     };
+    // Enter found no row and the screen has no resolve(): a bare code the
+    // rows list only on other exchanges names them (SymbolCode.elsewhere);
+    // anything else is "No listing found".
+    const noneFor = (q) => {
+      const e = SC && SC.elsewhere ? SC.elsewhere(list, q, symbolOfItem) : null;
+      if (e) tell(e.note, null, null, { away: e });
+      else sayNone(q);
+    };
+    // The rows the line offers for a code listed only elsewhere, as this
+    // list's own items (what a click on the row picks): [{ symbol, item }].
+    const itemSymbol = (it) => {
+      try { return symbolOfItem ? SC.of(symbolOfItem(it)) : (it.symbol ? SC.of(it.symbol) : SC.fromRow(it)); } catch (_) { return null; }
+    };
+    const offered = away && SC ? away.symbols.map((s, i) => {
+      const r = away.rows[i];
+      const item = list.indexOf(r) !== -1 ? r : list.find((it) => it && itemSymbol(it) === s);
+      return item ? { symbol: s, item } : null;
+    }).filter(Boolean) : [];
     const onKeyDown = (e) => {
       const typed = String(query || '').trim();
       // One letter: nothing searches for it, and F, V, T, C are US codes.
@@ -295,7 +370,7 @@
         const pick = best();
         if (pick) pickNow(pick);
         else if (resolve) runResolve(query, list);
-        else sayNone(query);
+        else noneFor(query);
       }
     };
     const shown = !!(open && list.length);
@@ -306,13 +381,28 @@
     // line when it appears.
     // The wait's Try again stays outside the region: its count changes every
     // second, and the region would read it out every second.
+    // A code listed only elsewhere: the line's words, then each listing as a
+    // button that picks its row -- the list under the field stays closed
+    // while a line shows, so "below" is these.
+    const ink = isDark ? (C3.textDark || '#E0E3EB') : (C3.textLightTheme || '#1e1b4b');
+    const lineText = noListing && offered.length
+      ? [away.head + ' '].concat(offered.map((o) => React.createElement('button', {
+        key: o.symbol, type: 'button', className: 'mi-touch40', 'data-pick-listing': o.symbol,
+        onClick: () => { tell(null); pickNow(o.item); },
+        style: { marginRight: 6, marginTop: 4, padding: '2px 10px', minHeight: 28, borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600,
+          background: 'none', border: '1px solid ' + (isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.25)'), color: ink },
+      }, o.symbol)))
+      : (noListing || '');
     const noteEl = React.createElement(React.Fragment, null,
       React.createElement('div', {
         role: 'status', 'aria-live': 'polite', 'data-no-listing': noListing ? 'true' : undefined,
         style: noListing ? { marginTop: 6, fontSize: 12, lineHeight: 1.4, overflowWrap: 'anywhere', color: isDark ? (C3.textMutedDark || 'rgba(255,255,255,0.7)') : (C3.textMutedLight || 'rgba(0,0,0,0.7)') } : undefined,
-      }, noListing || ''),
+      }, lineText),
       limited && noListing && canWait(limited.redo) ? React.createElement('div', { 'data-search-wait': 'true', style: { marginTop: 6 } },
-        React.createElement(RLW.RetryAfterWait, { failure: limited.failure, onRetry: searchAgain, panel: 'search:' + listId, isDark })) : null);
+        React.createElement(RLW.RetryAfterWait, { failure: limited.failure, onRetry: searchAgain, panel: 'search:' + listId, isDark })) : null,
+      // The search failed (not the limit): Try again asks it again.
+      outage && noListing && !limited && outage.query === query && canRetry() ? React.createElement('div', { 'data-search-retry': 'true', style: { marginTop: 6 } },
+        React.createElement(RLW.RetryAfterWait, { failure: outage.failure, onRetry: retrySearch, panel: retryKey, isDark, busyKey: retryKey })) : null);
     return {
       active: painted,
       target: active,
@@ -323,14 +413,25 @@
       // a sentence of its own. opts.error: what the screen's search threw;
       // opts.limited: the limit stopped a check of the typed text, and
       // opts.redo what to do again once the wait is over (else the search).
+      // opts.elsewhere: SymbolCode.elsewhere()'s, the listings to offer.
       say: (text, opts) => {
         const o = opts || {};
+        // A new line ends a Try again's search: this is its answer.
+        endRetry();
         const redo = typeof o.redo === 'function' ? o.redo : null;
         const atLimit = Boolean(text) && canWait(redo)
           && (o.limited === true || (o.error !== undefined && SC.searchLimited(o.error, RLW.secondsLeft())));
-        if (atLimit) tell(o.limited === true ? SC.LIMIT_WORDS : SC.SEARCH_LIMIT_WORDS, limitFailure(o.error), redo);
-        else tell(text);
+        if (atLimit) { tell(o.limited === true ? SC.LIMIT_WORDS : SC.SEARCH_LIMIT_WORDS, limitFailure(o.error), redo); return; }
+        // EODHD's error, a dropped connection, an answer that could not be
+        // read: said in the AI thesis search's words, with a Try again that
+        // asks the search again ("Try again." was words only).
+        const down = text && o.error !== undefined && canRetry() ? RLW.outage(o.error) : null;
+        if (down && !down.limited) tell(RLW.failText('The ticker search', down), null, null, { outage: down });
+        else tell(text, null, null, { away: o.elsewhere });
       },
+      // The screen's search for `q` has answered, rows or none (a failure
+      // is said with say()): a Try again's search ends here.
+      searched,
       enterNone: (q, rows) => { if (resolve) runResolve(q, rows || []); else sayNone(q); },
       // A selection made outside the hook (a row clicked, a chip): ends
       // what an Enter left out, so its late answer cannot replace it.

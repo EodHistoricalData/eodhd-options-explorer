@@ -534,6 +534,19 @@
     };
 
     var children = props.children;
+    // The exchanges' status is asked through the client once the modules
+    // are loaded (shell/api.js, adoptExchangeStatus).
+    if (window.EODHD_API && window.EODHD_API._adoptExchangeStatus) window.EODHD_API._adoptExchangeStatus();
+    // The view under the frame is mounted afresh for another address (its
+    // key, app.js): the screen it was is left, and a loader's steps still
+    // to come are not taken for it (EODHD_API.screen).
+    var screenKey = children && children.key != null ? String(children.key) : null;
+    React.useEffect(function () {
+      return function () {
+        var api = window.EODHD_API;
+        if (api && api.leaveScreen) api.leaveScreen();
+      };
+    }, [screenKey]);
     var silent = props.silentRefusals || [];
     // Told to Entitlement before the view renders, so that what the view
     // reads from explained() and what this frame shows are the same list.
@@ -609,7 +622,11 @@
           })
         : null,
       hintState[0] ? null : aiHint(props.hasAIFeatures, theme, inset, dismissHint),
-      React.createElement(ViewBoundary, { key: 'view', theme: theme, inset: inset }, children),
+      // Where the view's own lines are looked for (Entitlement: a failure
+      // the screen says itself leaves the panel only while its line is on
+      // the page) -- never in the panels above. No box of its own.
+      React.createElement('div', { key: 'view', 'data-app-view': 'true', style: { display: 'contents' } },
+        React.createElement(ViewBoundary, { theme: theme, inset: inset }, children)),
       footer(theme, inset)
     );
   };

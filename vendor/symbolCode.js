@@ -16,6 +16,7 @@
 //   SymbolCode.index(raw)         -> { code: 'GSPC.INDX' } | { foreign: 'GSPC.US', base: 'GSPC' } | { code: null, junk? }
 //   SymbolCode.fromRow(row)       -> a search row's symbol ('IBM' on NYSE -> IBM.US)
 //   SymbolCode.bestRow(rows, q)   -> the search row Enter takes for typed text, or null
+//   SymbolCode.elsewhere(rows, q) -> a bare code listed only on other exchanges: their rows and the sentence
 //   SymbolCode.typedListing(q)    -> the symbol of text typed with its exchange or ^, or null
 //   SymbolCode.parse(q)           -> what typed text is, and the text to search for
 //   SymbolCode.searchText(q)      -> the text a picker sends to the search ("VOD.L" -> "VOD")
@@ -25,6 +26,7 @@
 //   SymbolCode.unlisted(sym)      -> true for a market EODHD does not list ("D05.SI")
 //   SymbolCode.strip(raw)         -> the text without invisible characters, NBSP as a space
 //   SymbolCode.apiFor(api, key)   -> the search / quote / limit calls resolve() makes
+//   SymbolCode.searchDeadline(ms, onLate, api) -> stop(): a search's deadline, from when it is sent
 //
 // A code with no exchange is, in this order: the held listing with that code
 // (`held`); the listing the search returned for exactly that code (`rows`);
@@ -242,7 +244,8 @@
   // "SHEL.LSE") takes the row that is that listing, or none: the pickers cut
   // the text at its first dot and took the first row, so "BRK.B" added
   // BRK.TO and "^GSPC" GSPCX.US. A bare code takes
-  // the row with that code, the US listing first; words take the first row
+  // the row that is its own listing (the US one, a pair's on CC or FOREX),
+  // or none; words take the first row
   // whose name holds them ("apple", "Apple Inc."). One word that is neither
   // a row's code nor in its name is a code nobody lists: none -- "AAPLE"
   // took APLE, Apple Hospitality REIT, the first row.
@@ -283,14 +286,59 @@
       const t = typedKind(q);
       return t.listing ? (list.find((r) => sym(r) === t.listing) || null) : null;
     }
+    // A bare code is its own listing -- the US one, or a pair's on CC or
+    // FOREX; with none, the one exchange that lists that code ("M&M" is
+    // M&M.NSE, accepted 28.10 #3); with several, none of them: "MSF" took
+    // MSF.XETRA, the first row, and Sentiment added a card "MSF × no data".
+    // Those are said instead (elsewhere).
     const exact = list.filter((r) => base(r) === q);
-    if (exact.length) return exact.find((r) => /\.US$/.test(sym(r) || '')) || exact[0];
+    if (exact.length) return exact.find((r) => sym(r) === of(q)) || onlyListing(exact, sym);
     const words = q.split(/[^A-Z0-9&]+/).filter(Boolean);
     const named = (r) => {
       const name = clean(r.Name || r.name || '').split(/[^A-Z0-9&]+/).filter(Boolean);
       return words.length > 0 && words.every((w) => name.some((n) => n.indexOf(w) === 0));
     };
     return list.find(named) || (/\s/.test(q) ? list[0] : null);
+  }
+
+  // The rows of a bare code with no listing of its own: the one listing
+  // when exactly one exchange has the code (several rows for it count as
+  // one), else null. "M&M" is M&M.NSE (accepted 28.10 #3).
+  function onlyListing(rows, symOf) {
+    const symbols = {};
+    (rows || []).forEach((r) => { const s = r && symOf(r); if (s) symbols[s] = symbols[s] || r; });
+    const keys = Object.keys(symbols);
+    return keys.length === 1 ? symbols[keys[0]] : null;
+  }
+
+  // A bare code the search lists only on several other exchanges: Enter
+  // takes none of them, and the line names them so one is picked. One exchange alone is taken (onlyListing).
+  //   elsewhere(rows, q, symbolOf) -> { code, home, symbols, rows, head, note } | null
+  // `home`: the listing the code names alone (MSF.US); `rows`: the rows that
+  // are on other exchanges, in the search's order; `note`: the sentence,
+  // "MSF is not a US ticker. Pick one below: MSF.XETRA, MSF.F"; `head`: its
+  // words before the names, for a screen that offers them as buttons.
+  // symbolOf as bestRow's.
+  const ELSEWHERE_SHOWN = 4;
+  function elsewhere(rows, query, symbolOf) {
+    const q = clean(query);
+    if (!q || looksTyped(q) || /\s/.test(q) || !codeOk(q)) return null;
+    const home = of(q);
+    if (!home) return null;
+    const sym = (r) => {
+      try { return symbolOf ? of(symbolOf(r)) : (r.symbol ? of(r.symbol) : fromRow(r)); } catch (_) { return null; }
+    };
+    const mine = (rows || []).filter((r) => { const s = r && sym(r); return Boolean(s) && s.slice(0, s.lastIndexOf('.')) === q; });
+    if (!mine.length || mine.some((r) => sym(r) === home)) return null;
+    const seen = {};
+    const others = mine.filter((r) => { const s = sym(r); if (seen[s]) return false; seen[s] = true; return true; });
+    // One exchange alone is the code's listing, and is taken (onlyListing).
+    if (others.length < 2) return null;
+    const symbols = others.map(sym);
+    const venue = home.slice(home.lastIndexOf('.') + 1);
+    const named = symbols.slice(0, ELSEWHERE_SHOWN).join(', ') + (symbols.length > ELSEWHERE_SHOWN ? ' and ' + (symbols.length - ELSEWHERE_SHOWN) + ' more' : '');
+    const head = q + (venue === 'US' ? ' is not a US ticker.' : ' is not listed on ' + venue + '.') + ' Pick one below:';
+    return { code: q, home, symbols, rows: others, head, note: head + ' ' + named };
   }
 
   // One edit apart (a letter dropped, added, changed, or two neighbours
@@ -583,17 +631,23 @@
       : (o.search && t.search ? Promise.resolve().then(() => o.search(t.search)).then((r) => (Array.isArray(r) ? r : []), (e) => { searchFailed = statusOf(e); searchUnreadable = !!(e && e.unreadable); return null; }) : Promise.resolve([]));
     return rowsP.then((rows) => {
       answered = rows;
-      // A code takes the row with that code (the US listing first), never
-      // the first row of the list: that is another security. Words take the
-      // first row, as the search ranks them.
+      // A code takes the row with that code that is its own listing (the US
+      // one, a pair's on CC or FOREX), never the first row of the list: that
+      // is another security. Words take the first row, as the search ranks
+      // them.
       // Rows as the search sends them ({ Code, Exchange }) or as a screen
       // keeps them ({ symbol }).
       const symOf = (r) => (!r ? null : r.Code != null ? fromRow(r) : (r.symbol ? of(r.symbol) : null));
       const baseOf = (s) => (s ? s.slice(0, s.lastIndexOf('.')) : '');
       const exact = t.kind === 'code' ? (rows || []).filter((r) => baseOf(symOf(r)) === t.code) : null;
-      const row = exact ? (exact.find((r) => /\.US$/.test(symOf(r))) || exact[0] || null) : bestRow(rows || [], raw);
+      const row = exact ? (exact.find((r) => symOf(r) === of(t.code)) || onlyListing(exact, symOf)) : bestRow(rows || [], raw);
       const symbol = row && symOf(row);
       if (symbol) return { symbol, row };
+      // The search lists the code on several other exchanges: none of them
+      // is taken, and they are named ("MSF" added
+      // MSF.XETRA). Only one is that one (onlyListing).
+      const away = exact && exact.length ? elsewhere(exact, t.code, (r) => symOf(r)) : null;
+      if (away) return { symbol: null, reason: 'elsewhere', note: away.note, elsewhere: away };
       // The search that failed was for that very listing ("SHEL.LSE"): it is
       // the check, and asking it again at once only fails twice.
       if (rows == null && t.kind === 'listing' && clean(t.search) === t.symbol && searched(t.symbol)) {
@@ -661,7 +715,9 @@
       .then((res) => {
         // `limited`: the limit stopped the check; a picker counts the wait
         // down beside LIMIT_WORDS and searches again once it is over.
-        if (!res.symbol) return res.reason === 'limited' ? { note: res.note, limited: true } : { note: res.note };
+        // `elsewhere`: the code is listed only on other exchanges; the line
+        // offers those rows to pick.
+        if (!res.symbol) return res.reason === 'limited' ? { note: res.note, limited: true } : res.elsewhere ? { note: res.note, elsewhere: res.elsewhere } : { note: res.note };
         if (res.index && opts.indexNote) {
           const said = opts.indexNote(res.symbol);
           if (said) return { note: said };
@@ -672,8 +728,71 @@
       });
   }
 
+  // A search's deadline, counted from when its request is actually sent.
+  // The Mini App with its own key asks EODHD through
+  // the SDK client, which waits out a 429's Retry-After and asks again by
+  // itself: Sentiment's 9 s ran from the first request, ran out inside the
+  // 18 s wait, and the list the repeat brought at 21 s was dropped under
+  // "The ticker search took too long". Nothing leaves inside the client's
+  // wait (its gate refuses it), so a wait that starts while the search is
+  // out moves the start to the wait's end -- read from the client
+  // (rateLimitedUntil, as apiFor reads it) and from the "api:rate-limited"
+  // it sends, for a wait that also ends before the time would be up.
+  //   const stop = searchDeadline(ms, onLate, api); ... stop()
+  // onLate is called once, when ms have passed since the request went out
+  // and stop() was not called first.
+  // The time is counted by timers, never as the clock's distance to a
+  // moment: the stands hold Date.now still, and a hang counted that way was
+  // never told -- "took too long", Add Position's type question (CI on r24,
+  // accepted 26.10 #12, 22.10 #5). A wait's length is read once, when it is
+  // seen: running at the start (2 s left made 9 s, not 11),
+  // told by "api:rate-limited", or still running when the time is up (a
+  // client that sends no event).
+  function searchDeadline(ms, onLate, api) {
+    const A = api || {};
+    const waitLeft = () => {
+      let u = 0;
+      try { u = typeof A.rateLimitedUntil === 'function' ? Number(A.rateLimitedUntil()) || 0 : 0; } catch (_) { u = 0; }
+      return Math.max(0, u - Date.now());
+    };
+    const events = typeof window !== 'undefined' && typeof window.addEventListener === 'function';
+    let timer = null;
+    let done = false;
+    const stop = () => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      if (events) window.removeEventListener('api:rate-limited', onWait);
+    };
+    // ms from the end of a wait `left` ms long, from now.
+    const arm = (left) => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(due, left + ms);
+    };
+    function due() {
+      timer = null;
+      if (done) return;
+      const left = waitLeft();
+      if (left > 0) { arm(left); return; }
+      stop();
+      onLate();
+    }
+    // A wait that starts while the search is out holds its request: the
+    // time starts again from its end. The client tells only a wait that
+    // ends later than the one before.
+    function onWait(e) {
+      if (done) return;
+      const until = Number(e && e.detail && e.detail.until) || 0;
+      const left = until - Date.now();
+      if (left > 0) arm(left);
+    }
+    if (events) window.addEventListener('api:rate-limited', onWait);
+    arm(waitLeft());
+    return stop;
+  }
+
   // For tests: forget what the checks said.
   function forgetListed() { listedKept.clear(); listedRows.clear(); }
 
-  window.SymbolCode = { read, of, problem, index, fromRow, bestRow, typedListing, parse, searchText, resolve, listed, listedRow, noteSearch, searched, unlisted, unpriced, strip, apiFor, forPicker, forgetListed, noneNote, limitNote, failNote, searchFailNote, searchLimited, LIMIT_WORDS, SEARCH_LIMIT_WORDS, didYouMean, pairVenue, venueOf, FIAT, METALS, CRYPTO_QUOTE, US_VENUES, ONE_LETTER_EXCHANGES, EXCHANGES, YAHOO, UNLISTED, SEARCHED, NO_PRICES };
+  window.SymbolCode = { read, of, problem, index, fromRow, bestRow, elsewhere, typedListing, parse, searchText, resolve, listed, listedRow, noteSearch, searched, unlisted, unpriced, strip, apiFor, forPicker, searchDeadline, forgetListed, noneNote, limitNote, failNote, searchFailNote, searchLimited, LIMIT_WORDS, SEARCH_LIMIT_WORDS, didYouMean, pairVenue, venueOf, FIAT, METALS, CRYPTO_QUOTE, US_VENUES, ONE_LETTER_EXCHANGES, EXCHANGES, YAHOO, UNLISTED, SEARCHED, NO_PRICES };
 })();
