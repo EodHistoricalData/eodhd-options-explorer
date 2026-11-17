@@ -225,8 +225,10 @@
     const tell = (text, limit, redo, more) => {
       const m = more || {};
       setNoListing(text || null);
-      setLimited(limit ? { failure: limit, query: queryRef.current, redo: redo || null } : null);
-      setOutage(text && m.outage ? { failure: m.outage, query: queryRef.current } : null);
+      // Each failure with what it asked (RateLimitWait.failure's `asked`):
+      // the field may hold another query by the time it is read.
+      setLimited(limit ? { failure: Object.assign({}, limit, { asked: queryRef.current }), query: queryRef.current, redo: redo || null } : null);
+      setOutage(text && m.outage ? { failure: Object.assign({}, m.outage, { asked: queryRef.current }), query: queryRef.current } : null);
       setAway(text && m.away && m.away.rows && m.away.rows.length ? m.away : null);
     };
     const canCount = () => Boolean(RLW && RLW.RetryAfterWait && SC && SC.LIMIT_WORDS);
@@ -399,10 +401,10 @@
         style: noListing ? { marginTop: 6, fontSize: 12, lineHeight: 1.4, overflowWrap: 'anywhere', color: isDark ? (C3.textMutedDark || 'rgba(255,255,255,0.7)') : (C3.textMutedLight || 'rgba(0,0,0,0.7)') } : undefined,
       }, lineText),
       limited && noListing && canWait(limited.redo) ? React.createElement('div', { 'data-search-wait': 'true', style: { marginTop: 6 } },
-        React.createElement(RLW.RetryAfterWait, { failure: limited.failure, onRetry: searchAgain, panel: 'search:' + listId, isDark })) : null,
+        React.createElement(RLW.RetryAfterWait, { failure: limited.failure, onRetry: searchAgain, panel: 'search:' + listId, isDark, asked: query })) : null,
       // The search failed (not the limit): Try again asks it again.
       outage && noListing && !limited && outage.query === query && canRetry() ? React.createElement('div', { 'data-search-retry': 'true', style: { marginTop: 6 } },
-        React.createElement(RLW.RetryAfterWait, { failure: outage.failure, onRetry: retrySearch, panel: retryKey, isDark, busyKey: retryKey })) : null);
+        React.createElement(RLW.RetryAfterWait, { failure: outage.failure, onRetry: retrySearch, panel: retryKey, isDark, busyKey: retryKey, asked: query })) : null);
     return {
       active: painted,
       target: active,

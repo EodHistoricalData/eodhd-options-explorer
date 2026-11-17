@@ -554,7 +554,7 @@ Keep it concise (150 words max). Use **bold** for key terms.`;
     // itself after the limit's wait only while the chain's budget allows
     // (onReload, null once spent); Try again always.
     optionsData && optionsData.partFail && window.RateLimitWait && React.createElement(window.RateLimitWait.FailNote, {
-      what: 'Part of the options chain', failure: window.RateLimitWait.failure(optionsData.partFail), onRetry, onReload, autoRetry: Boolean(onReload), isDark, panel: 'options-gex',
+      what: 'Part of the options chain', partial: true, ownFail: 'options-chain', failure: window.RateLimitWait.failure(optionsData.partFail), onRetry, onReload, autoRetry: Boolean(onReload), isDark, panel: 'options-gex',
       extra: 'The figures below are from the contracts that loaded.', style: { fontSize: 12, marginBottom: 12 },
     }),
 

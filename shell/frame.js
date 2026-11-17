@@ -534,9 +534,6 @@
     };
 
     var children = props.children;
-    // The exchanges' status is asked through the client once the modules
-    // are loaded (shell/api.js, adoptExchangeStatus).
-    if (window.EODHD_API && window.EODHD_API._adoptExchangeStatus) window.EODHD_API._adoptExchangeStatus();
     // The view under the frame is mounted afresh for another address (its
     // key, app.js): the screen it was is left, and a loader's steps still
     // to come are not taken for it (EODHD_API.screen).

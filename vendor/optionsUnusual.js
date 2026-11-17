@@ -278,7 +278,7 @@ Keep it concise (120 words). Use **bold** for key terms.`;
     // By itself after the limit's
     // wait only within the chain's budget (onReload, null once spent).
     partFail && React.createElement(window.RateLimitWait.FailNote, {
-      what: 'Part of the options chain', failure: partFail, onRetry, onReload, autoRetry: Boolean(onReload), isDark, panel: 'options-unusual',
+      what: 'Part of the options chain', partial: true, ownFail: 'options-chain', failure: partFail, onRetry, onReload, autoRetry: Boolean(onReload), isDark, panel: 'options-unusual',
       extra: filtered.length ? 'The activity below is from the contracts that loaded.' : null,
       style: { ...cardStyle, marginBottom: '12px' },
     }),

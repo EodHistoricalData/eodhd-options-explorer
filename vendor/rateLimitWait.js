@@ -273,7 +273,10 @@ window.RateLimitWait = (function () {
   // a page of HTML with 200 as code "parse_error", statusCode 200: read as a
   // plain 200 it was no failure at all, and the GBX/USD rate it left out
   // was named with no reason.
-  function failure(err) {
+  // `asked`: what the failed request asked for (a search's query), kept with
+  // the failure -- the one repeat at the limit is of that, never of what a
+  // field holds by the time it is read (useReloadAfterWait).
+  function failure(err, asked) {
     var o = err && typeof err === 'object' ? err : null;
     var st = o ? (Number(o.upstreamStatus) || Number(o.status) || Number(o.statusCode) || 0) : 0;
     var unreadable = Boolean(o && (o.unreadable || o.code === 'parse_error'));
@@ -282,6 +285,7 @@ window.RateLimitWait = (function () {
       : Boolean(until());
     var f = { limited: limited, status: limited ? 429 : st, at: Date.now() };
     if (unreadable && !limited) f.unreadable = true;
+    if (asked != null) f.asked = String(asked);
     return f;
   }
   // An answer that came back and could not be read, for a client to throw:
@@ -308,24 +312,47 @@ window.RateLimitWait = (function () {
   }
 
   // Whether a host's own panel above the screens (the open apps' frame)
-  // says this failure already: the key refused (401); the day's requests
-  // spent, or the plan refusing a feed (402). A line naming it beside the
-  // panel was a second message about one failure -- the calendar's company
-  // names at 401. The terminal has no such panel, and its lines say
-  // it. A 403 and EODHD's errors are the lines' to say as before.
+  // says this failure: the key refused (401) or the day's requests spent
+  // (402) -- always, wherever the host has a panel. A line naming it beside
+  // the panel was a second message about one failure -- the calendar's
+  // company names at 401. It was read off what the panel said at the
+  // moment, and the line put the key's own reason back as soon as another
+  // feed's answer took the panel down: "Market hours did not load: EODHD did
+  // not accept the API key (401)." under the map, the page moving 200 px.
+  // The host keeps its panel up until a request of
+  // the same kind is served with that key; the lines never say the key's or
+  // the day's reason there. The terminal has no such panel, and its lines
+  // say it. A 403 and EODHD's errors are the lines' to say as before.
+  function hostPanel() {
+    var E = window.Entitlement;
+    return Boolean(E && typeof E.problem === 'function');
+  }
   function hostSaysKey(f) {
     if (!f || f.limited || f.unreadable || (f.status !== 401 && f.status !== 402)) return false;
-    var E = window.Entitlement;
-    if (!E) return false;
-    try {
-      var p = typeof E.problem === 'function' ? E.problem() : null;
-      if (f.status === 401) return Boolean(p && (p.kind === 'key' || p.status === 401));
-      return Boolean((typeof E.anyDenied === 'function' && E.anyDenied()) || (p && p.status === 402));
-    } catch (_) { return false; }
+    return hostPanel();
+  }
+  // A plan's refusal: a 403 that is not the limit.
+  function planRefusal(f) {
+    return Boolean(f && f.status === 403 && !f.limited && !f.unreadable);
   }
   // Where the host's panel says the reason, a line that says more than the
   // failure (a form's "Enter what you paid") points to it instead.
   var PANEL_SAYS = 'see the panel above.';
+  // The whole line under the host's panel: "<What> did not load. See the
+  // panel above.".
+  function panelLine(what) {
+    return (what || 'The data') + ' did not load. See the panel above.';
+  }
+  // A line that points to the host's panel ("… See the panel above.")
+  // says so with data-see-panel: the panel keeps speaking over it, and the
+  // line still counts as one that names a failure below. undefined for any other words.
+  function seesPanel(text) {
+    return /see the panel above\.?\s*$/i.test(String(text || '')) ? 'true' : undefined;
+  }
+  // A spent day (402) said where no host panel says it: never "not included
+  // in this plan", which is a 403's (the calendar's
+  // company names at a daily 402).
+  var DAILY = "EODHD's daily request limit was reached (402).";
 
   // What the host's panel says about the key and the day, for a view that
   // reads hostSaysKey (or ExchangeStatus.refusalText) while it draws: the
@@ -365,20 +392,24 @@ window.RateLimitWait = (function () {
 
   // The sentence for a failure, `what` first ("The price history"): the
   // limit, a refusal, EODHD's own error, or no answer -- never "no data".
-  function failText(what, f) {
+  // `own`: the reason whatever the host's panel says (failReason).
+  function failText(what, f, own) {
     var w = what || 'The data';
-    if (hostSaysKey(f)) return w + ' did not load: ' + PANEL_SAYS;
-    if (f && (f.status === 402 || f.status === 403) && !f.limited && !f.unreadable) return w + ' is not included in this plan (' + f.status + ').';
-    return w + ' did not load' + (f ? ': ' + failReason(f) : '.');
+    if (!own && hostSaysKey(f)) return panelLine(w);
+    if (f && f.status === 403 && !f.limited && !f.unreadable) return w + ' is not included in this plan (' + f.status + ').';
+    return w + ' did not load' + (f ? ': ' + failReason(f, own) : '.');
   }
   // The reason alone, for a screen with words of its own before it.
-  function failReason(f) {
+  // `own`: the line's own reason whatever the host's panel says -- a part
+  // that did not load beside a part that did is the line's to say (the options chain's later pages at 401).
+  function failReason(f, own) {
     if (!f) return 'EODHD did not answer, or the connection dropped.';
-    if (hostSaysKey(f)) return PANEL_SAYS;
+    if (!own && hostSaysKey(f)) return PANEL_SAYS;
     if (f.limited) return REACHED;
     if (f.unreadable) return UNREADABLE;
     if (f.status === 401) return 'EODHD did not accept the API key (401).';
-    if (f.status === 402 || f.status === 403) return 'it is not included in this plan (' + f.status + ').';
+    if (f.status === 402) return DAILY;
+    if (f.status === 403) return 'it is not included in this plan (' + f.status + ').';
     if (f.status >= 500) return 'EODHD answered with an error (' + f.status + ').';
     if (f.status) return 'EODHD answered ' + f.status + '.';
     return 'EODHD did not answer, or the connection dropped.';
@@ -451,13 +482,88 @@ window.RateLimitWait = (function () {
     return Boolean(a.closest('[data-retry-focus], [data-rl-fail]'));
   }
 
-  function useReloadAfterWait(failed, reload, key) {
+  // One automatic repeat per failure: the repeat's own
+  // failure re-armed it, and a limit that held asked every minute without
+  // end -- fundamentals 22 times in 5.5 minutes, the quotes once in 36 s.
+  // Each panel (key) has one repeat to spend: `spent` once it has gone,
+  // `inFlight` until an answer to it is seen, `asked` what it asked for.
+  // The failure that answers the repeat spends nothing more: the line keeps
+  // its Try again counting the wait, and nothing is sent by itself.
+  // The budget comes back only:
+  //  - when the person acts: Try again (acted);
+  //  - when the screen is really opened again: a view's own hook mounting,
+  //    or a line that went away with no repeat of ours out and came back --
+  //    a line that leaves while its own repeat loads and comes back with
+  //    the repeat's failure is that failure (the
+  //    Dashboard's news line reset the budget at every mount, and asked
+  //    every 21 s for ever);
+  //  - when this panel's request was served: the view's failure gone while
+  //    no repeat of ours is out. Not the client's 'api:rate-limit-cleared':
+  //    any request served after the limit fires it (a cached quote), and
+  //    one served while our repeat was out read the repeat's own 429 as a
+  //    new failure -- the search asked NVDA three times on the stand;
+  //  - when another thing is asked (`asked`, the query typed): a repeat
+  //    served, then another query at 429 within 30 s, was read as the
+  //    repeat failing again by its time, and nothing was asked.
+  // No clock decides which attempt a failure belongs to; the request's own
+  // deadline (CHAIN_MS) only bounds how long a repeat is still out when its
+  // answer was never seen (served while its line was off the page).
+  var budgets = {};
+  function budgetOf(key) {
+    if (!budgets[key]) budgets[key] = { spent: false, inFlight: false, gone: false, asked: undefined };
+    return budgets[key];
+  }
+  // A press of the panel's Try again: its next failure is a new one.
+  function acted(key) {
+    budgets[key || 'panel'] = { spent: false, inFlight: false, gone: false, asked: undefined };
+  }
+  // opts.line: the hook is a failure line's (FailNote, RetryAfterWait),
+  // which comes and goes with its failure -- its mounting is not the screen
+  // opened. opts.asked: what the panel asks for now, when it asks for
+  // different things (the query in the field); the failure's own `asked`
+  // (failure(err, asked)) is what the failed request asked for. A failure of
+  // another query than the field's never schedules a repeat: MSFT's 429 still
+  // handed on with NVDA typed fired NVDA's repeat at once, and NVDA's own
+  // 429 was then taken as that repeat's answer.
+  function useReloadAfterWait(failed, reload, key, opts) {
     var R = window.React;
     var ref = R.useRef(reload);
     ref.current = reload;
     var k = key || 'panel';
+    var line = Boolean(opts && opts.line);
+    // A query as typed or as asked ("msft ", "MSFT"): the same search.
+    var subjectOf = function (v) { return v == null ? undefined : String(v).trim().toUpperCase(); };
+    var current = subjectOf(opts && opts.asked);
+    // A view's hook: the screen opened (again) starts afresh. A line's:
+    // leaving with no repeat of ours out is the line gone -- the panel
+    // answered, or the screen was left; coming back is a new start.
+    R.useEffect(function () {
+      if (!line) acted(k);
+      return function () {
+        var b = budgets[k];
+        if (line && b && !b.inFlight) b.gone = true;
+      };
+    }, [k]);
+    // Served: the failure gone while no repeat of ours is out (while one
+    // is out, gone means loading).
+    R.useEffect(function () {
+      if (failed) return;
+      var b = budgets[k];
+      if (b && b.spent && !b.inFlight) acted(k);
+    }, [failed, k]);
     R.useEffect(function () {
       if (!failed || !failed.limited) return undefined;
+      // What this failure was of: its own subject, else the field's.
+      var asked = failed.asked != null ? subjectOf(failed.asked) : current;
+      if (current !== undefined && asked !== current) return undefined;
+      var b = budgetOf(k);
+      // Another thing asked: a new attempt. The repeat's own answer: spent.
+      // The line back after it had gone: the screen again.
+      if (asked !== undefined && b.asked !== undefined && asked !== b.asked) { acted(k); b = budgetOf(k); }
+      else if (b.inFlight && Date.now() - b.firedAt <= CHAIN_MS) { b.inFlight = false; return undefined; }
+      else if (b.inFlight) { acted(k); b = budgetOf(k); }
+      else if (b.gone) { acted(k); b = budgetOf(k); }
+      if (b.spent) return undefined;
       var off = false;
       var t = null;
       var due = reloadAt(failed, k);
@@ -469,11 +575,17 @@ window.RateLimitWait = (function () {
         if (left > 0) { t = setTimeout(check, Math.min(1000, left + 20)); return; }
         off = true;
         if (streaks[k]) streaks[k].reloadedAt = Date.now();
+        var now = budgetOf(k);
+        now.spent = true;
+        now.inFlight = true;
+        now.firedAt = Date.now();
+        now.gone = false;
+        now.asked = asked;
         if (typeof ref.current === 'function') ref.current();
       };
       check();
       return function () { off = true; if (t) clearTimeout(t); };
-    }, [failed, k]);
+    }, [failed, k, current]);
   }
 
   // A second press of a button whose paid request is still on its way joins
@@ -558,7 +670,10 @@ window.RateLimitWait = (function () {
   // the open apps' shell, which keeps its panel out of what a line says),
   // busyKey (the work its retry runs, as RetryButton's), onReload (the
   // reload after the wait when it is not a press -- a view that keeps a
-  // budget for it; onRetry when absent).
+  // budget for it; onRetry when absent), sayPanel (under the host's panel
+  // at 401/402: "<what> did not load. See the panel above." rather than
+  // nothing), partial (part of a set did not load: said whatever the
+  // panel says, with the line's own reason).
   //
   // The focus after a retry -- pressed, or the reload after the wait -- when
   // it was on this line: the line leaves while the panel loads, and the
@@ -616,12 +731,14 @@ window.RateLimitWait = (function () {
   // same reload once the wait is over as a FailNote's.
   // props: failure (failure()), onRetry, panel (the name its reloads are
   // paced by), isDark, label, style, busyKey (as RetryButton's: "Loading…"
-  // while the search it asked again is out).
+  // while the search it asked again is out), asked (the query: another one
+  // is another attempt).
   function RetryAfterWait(props) {
     var C3 = window.C3 || {};
-    useReloadAfterWait(props.failure, props.onRetry, props.panel);
+    useReloadAfterWait(props.failure, props.onRetry, props.panel, { line: true, asked: props.asked });
+    var press = function (e) { acted(props.panel); if (props.onRetry) props.onRetry(e); };
     return window.React.createElement(RetryButton, {
-      isDark: props.isDark, label: props.label, onClick: props.onRetry, 'data-retry-focus': 'true', busyKey: props.busyKey,
+      isDark: props.isDark, label: props.label, onClick: press, 'data-retry-focus': 'true', busyKey: props.busyKey,
       style: Object.assign({ padding: '4px 12px', minHeight: 32, borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600,
         background: 'none', border: '1px solid ' + (props.isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.25)'),
         color: props.isDark ? (C3.textDark || '#E0E3EB') : (C3.textLightTheme || '#1e1b4b') }, props.style),
@@ -636,17 +753,31 @@ window.RateLimitWait = (function () {
     var panel = props.panel || props.what || props.text;
     // `panel`: the name its automatic reloads are paced by (useReloadAfterWait).
     var reload = props.onReload || props.onRetry;
-    useReloadAfterWait(props.autoRetry === false || !reload ? null : f, reload, panel);
+    useReloadAfterWait(props.autoRetry === false || !reload ? null : f, reload, panel, { line: true, asked: props.asked });
     var boxRef = R.useRef(null);
     useRetryFocus(boxRef, panel, Boolean(props.ownFocus));
     var C3 = window.C3 || {};
     // The reason is a live region and is read when it appears; the held
     // press's note after it counts down every second, so it is outside
     // and said once by the wait itself.
-    var words = (props.text || failText(props.what, f)) + (props.extra ? ' ' + props.extra : '');
+    // `partial`: part of a set loaded and the rest did not -- said with its
+    // own reason and Try again whatever the host's panel says: the options chain's later pages refused at 401
+    // left nine expiries shown as the whole chain.
+    var words = (props.text || failText(props.what, f, Boolean(props.partial))) + (props.extra ? ' ' + props.extra : '');
     // A refused key or a spent day the host's panel says already: nothing
     // here (one failure, one message). The terminal draws it as before.
-    if (hostSaysKey(f)) return null;
+    // `sayPanel`: a card with nothing else in it says "<what> did not load.
+    // See the panel above." instead, with no Try again (a refused request is
+    // not asked again for the same key): the benchmark's card stood empty
+    // under the panel, "Unable to load benchmark data".
+    var under = !props.partial && hostSaysKey(f);
+    if (under && !props.sayPanel) return null;
+    if (under) {
+      return R.createElement('div', {
+        ref: boxRef, 'data-rl-fail': 'other', 'data-own-fail': props.ownFail || undefined, 'data-see-panel': 'true',
+        style: Object.assign({ fontSize: 13, lineHeight: 1.5, color: props.isDark ? (C3.textDark || '#E0E3EB') : (C3.textLightTheme || '#1e1b4b') }, props.style),
+      }, R.createElement('span', { role: 'status' }, panelLine(props.what)));
+    }
     return R.createElement('div', {
       ref: boxRef,
       'data-rl-fail': f && f.limited ? 'limit' : 'other',
@@ -656,8 +787,9 @@ window.RateLimitWait = (function () {
       R.createElement('span', { role: 'status' }, words),
       w.note ? R.createElement('span', { 'data-rl-count': 'true' }, ' ' + w.note) : null,
       // busyKey: the work the retry runs (setBusy) -- "Loading…" meanwhile.
-      props.onRetry ? R.createElement(RetryButton, {
-        wait: w, isDark: props.isDark, label: props.label, onClick: props.onRetry, 'data-retry-focus': props['data-retry-focus'], busyKey: props.busyKey,
+      // A plan's refusal (403) is not asked again: no Try again.
+      props.onRetry && !planRefusal(f) ? R.createElement(RetryButton, {
+        wait: w, isDark: props.isDark, label: props.label, onClick: function (e) { acted(panel); props.onRetry(e); }, 'data-retry-focus': props['data-retry-focus'], busyKey: props.busyKey,
         style: Object.assign({ marginLeft: 8, padding: '4px 12px', minHeight: 32, borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600,
           background: 'none', border: '1px solid ' + (props.isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.25)'),
           color: props.isDark ? (C3.textDark || '#E0E3EB') : (C3.textLightTheme || '#1e1b4b') }, props.buttonStyle),
@@ -669,14 +801,15 @@ window.RateLimitWait = (function () {
     parseRetryAfter: parseRetryAfter, REACHED: REACHED, UNREADABLE: UNREADABLE, HELD: HELD, OVER: OVER,
     announce: announce, unreadableError: unreadableError, notData: notData, label: label, waitLook: waitLook,
     RetryButton: RetryButton, failure: failure, failText: failText, failReason: failReason, outage: outage, hostSaysKey: hostSaysKey,
+    hostPanel: hostPanel, panelLine: panelLine, DAILY: DAILY, seesPanel: seesPanel,
     useHostPanel: useHostPanel, Reason: Reason,
     setBusy: setBusy, endBusy: endBusy, busyOf: busyOf, useBusy: useBusy,
     useReloadAfterWait: useReloadAfterWait, FailNote: FailNote, RetryAfterWait: RetryAfterWait, JOIN_MS: JOIN_MS, joins: joins, focusOnRetry: focusOnRetry,
     // The nearest heading before an element that is still on the page, for
     // a view that puts the focus back itself after a retry.
     headingBefore: function (el) { return headingsBefore(el).filter(function (h) { return document.contains(h); })[0] || null; },
-    reloadAt: reloadAt, reloadDelay: reloadDelay, RELOAD_FLOOR: RELOAD_FLOOR, RELOAD_MAX: RELOAD_MAX,
-    _resetPacing: function () { streaks = {}; },
+    reloadAt: reloadAt, reloadDelay: reloadDelay, RELOAD_FLOOR: RELOAD_FLOOR, RELOAD_MAX: RELOAD_MAX, acted: acted,
+    _resetPacing: function () { streaks = {}; budgets = {}; },
     _resetLive: function () { live.said = ''; live.at = 0; },
   };
 })();

@@ -11,30 +11,10 @@ window.APP_META = {
   "storage": [
     "eodhd_oss_chain:"
   ],
-  "ownFailures": [
-    "getOptionsChain",
-    "getOptionsExpiry",
-    "getMoreOptionsExpirations",
-    "getRealTimeData"
-  ],
-  "ownLines": {
-    "getOptionsChain": [
-      "[data-own-fail=\"options-chain\"]",
-      "[data-opt-part-fail]",
-      "[data-rl-fail]~Part of the options chain"
-    ],
-    "getOptionsExpiry": [
-      "[data-own-fail=\"options-chain\"]",
-      "[data-opt-part-fail]",
-      "[data-rl-fail]~Part of the options chain|The contracts for"
-    ],
-    "getMoreOptionsExpirations": [
-      "[data-rl-fail]~later dates"
-    ],
-    "getRealTimeData": [
-      "~Could not check"
-    ]
-  }
+  "lineKinds": [
+    "options-chain",
+    "quotes"
+  ]
 };
 
 if (!window.React || !window.ReactDOM) {

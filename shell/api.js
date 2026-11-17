@@ -109,6 +109,52 @@
     return CAPABILITY[segments[0]] || 'core';
   }
 
+  /**
+   * The kind of request, in the words a module's failure line names it:
+   * data-own-fail="quotes" on "1 without a price", "history" on the
+   * Backtest's line, "exchange-hours" on the market hours'. Entitlement
+   * keeps each failure under it, and the panel leaves to the screen what a
+   * line on the page names (shell/entitlement.js, said()). A capability is
+   * too coarse for that: the fundamentals, the ticker search and the
+   * economic data are all the core API.
+   */
+  var WHATS = {
+    'real-time': 'quotes',
+    'us-quote-delayed': 'quotes',
+    'eod': 'history',
+    'v1.1': 'fundamentals',
+    'fundamentals': 'fundamentals',
+    'sec-filings': 'insider',
+    'macro-indicator': 'macro',
+    'exchange-details': 'exchange-hours',
+    'exchange-symbol-list': 'company-names',
+    'screener': 'screener',
+    'news': 'news',
+    'sentiments': 'sentiment',
+    'search': 'search',
+    'economic-events': 'economic-events',
+    'div': 'dividends',
+  };
+  // The calendar's own feeds, the marketplace's products.
+  var MORE_WHATS = ['earnings', 'dividends', 'splits', 'ipos', 'options-chain', 'index-list', 'index-constituents'];
+  function whatOf(segments) {
+    var s = segments || [];
+    if (s[0] === 'mp') {
+      if (s.indexOf('options') !== -1) return 'options-chain';
+      var at = s.indexOf('spglobal');
+      if (at !== -1) return s[at + 1] === 'comp' ? 'index-constituents' : 'index-list';
+      return 'marketplace';
+    }
+    if (s[0] === 'calendar') return String(s[1] || 'calendar');
+    return Object.prototype.hasOwnProperty.call(WHATS, s[0]) ? WHATS[s[0]] : String(s[0] || '');
+  }
+  // Every kind there is, for the generator's check of the modules' marks.
+  function allWhats() {
+    var out = MORE_WHATS.slice();
+    Object.keys(WHATS).forEach(function (k) { if (out.indexOf(WHATS[k]) === -1) out.push(WHATS[k]); });
+    return out;
+  }
+
   // Fundamentals without Morningstar's fields: the same rule the terminal
   // applies in its own client and on its server, and server/proxy.js here.
   function stripMorningstar(data) {
@@ -243,41 +289,65 @@
   }
 
   /**
-   * Whether the screen that asks names this request's failure itself -- its
-   * own line, its own Try again -- so the panel above stays out of it
-   * (Entitlement: `owned`). Only where somebody says so: the caller
-   * (opts.reportsFailure), or the app, of a method a line of its screens
-   * names (meta.json ownFailures; the portfolio's quotes are its "1 without
-   * a price", the heatmap's are its tiles). A method used to claim it for
-   * every caller that asked with throwErrors, and the portfolio's
-   * fundamentals had no line: By Sector, Risk and Health said nothing of a
-   * 500, and the panel was gone.
+   * How a request's failure is recorded (Entitlement.fromResponse): its kind
+   * (whatOf), and whether a line of the screen's may come for it, so the
+   * panel waits a moment for that line rather than come up and go (`wait`):
+   * the caller says so (opts.wait, or opts.reportsFailure), or the app's
+   * screens name that kind of failure themselves without asking the panel
+   * (meta.json lineKinds: the portfolio's "1 without a price", its Backtest,
+   * the market hours under the heatmap). Who says a failure is decided on
+   * the page, by the lines' data-own-fail, never by this: a list of each
+   * line's words per app decided it, and every line not in it had the panel
+   * over it. `part`: data of the same set came (shell/options.js).
+   * `what`: the kind, where the request serves another (getScreenerData).
+   * `idle`: a function that says no screen uses the request now (an
+   * exchange's hours under the heatmap's Crypto tab).
    */
-  function ownLine(method, opts) {
-    if (opts && opts.reportsFailure) return true;
-    var list = window.APP_META && window.APP_META.ownFailures;
-    return Boolean(list && list.indexOf(method) !== -1);
+  function asking(segments, opts, params) {
+    var o = opts || {};
+    var what = o.what || whatOf(segments);
+    var kinds = window.APP_META && window.APP_META.lineKinds;
+    var wait = o.wait !== undefined ? o.wait : (Boolean(o.reportsFailure) || Boolean(kinds && kinds.indexOf(what) !== -1));
+    return { what: what, wait: wait || null, part: o.part || laterPage(params) || null, idle: o.idle || null };
   }
-  // Where that line is on the page, for Entitlement to look (meta.json
-  // ownLines; none: a RateLimitWait.FailNote).
-  function lineOf(method) {
-    var lines = window.APP_META && window.APP_META.ownLines;
-    return lines && Object.prototype.hasOwnProperty.call(lines, method) ? [].concat(lines[method]) : null;
+  // A page after the first of a set the caller pages through itself (the
+  // screener's results, the calendar's market caps): what came before it
+  // is on screen, so its failure leaves something below partial. The panel
+  // said "Nothing below is missing data" over the first page's companies.
+  function laterPage(params) {
+    if (!params) return false;
+    var at = Number(params.offset != null ? params.offset : params['page[offset]']);
+    return Number.isFinite(at) && at > 0;
   }
-  // answerOf's opts for a method's request: claimed (ownLine) or not, and
-  // where its line is. `claim`: a function that must also say yes (asked
-  // when the panel is drawn).
-  function own(method, opts, claim) {
-    if (!ownLine(method, opts)) return { owned: false };
-    return { owned: claim || true, line: lineOf(method) };
+
+  /**
+   * A refusal of the key, the day or the plan (401, 402, 403), by address:
+   * the same request is answered the same way from here for the page's
+   * life, without asking EODHD again. The calendar asked one exchange's
+   * refused list three times in 25 s, and the panel came and went with
+   * each; a refused key is not accepted on the next try either, and a spent
+   * day does not come back before midnight. Another request -- another
+   * symbol, another month -- is asked as any other.
+   */
+  var refusedAt = {};
+  // The query of an address, as an object (for laterPage).
+  function queryOf(path) {
+    var out = {};
+    var q = String(path).split('?')[1] || '';
+    q.split('&').forEach(function (pair) {
+      if (!pair) return;
+      var at = pair.indexOf('=');
+      try { out[decodeURIComponent(at === -1 ? pair : pair.slice(0, at))] = at === -1 ? '' : decodeURIComponent(pair.slice(at + 1)); } catch (_) { /* as it came */ }
+    });
+    return out;
   }
+  function refusal(status) { return status === 401 || status === 402 || status === 403; }
 
   /**
    * get(), before the parse: { ok, status, body }, or null when nothing was
    * asked or nothing came back. For the one caller that has to tell "there
    * is no such thing" from "it was not served" (getExchangeHolidaysV2).
-   * opts.owned: the failure is the screen's to name (ownLine), or a
-   * function that says so once the caller has the answer.
+   * opts: asking()'s (wait, reportsFailure, part), softDenial, fresh.
    */
   function answerOf(segments, params, opts) {
     // A symbol has to name something. ".." and "-" passed the views' own
@@ -332,7 +402,7 @@
     var key = (soft ? 'soft ' : '') + url;
     var entry = (opts && opts.fresh) ? null : inFlight[key];
     if (entry && Date.now() - entry.startedAt < JOIN_WINDOW_MS) return entry.promise;
-    var mine = { promise: send(url, capability, soft, opts && opts.owned, opts && opts.line, opts && opts.pinned), startedAt: Date.now() };
+    var mine = { promise: send(url, capability, soft, asking(segments, opts, merged)), startedAt: Date.now() };
     inFlight[key] = mine;
     // Only its own entry: a request left behind by a newer one must not
     // take the newer one off the table when it finally settles.
@@ -388,7 +458,8 @@
   // Exchanges whose details were not served: from which mark on an answer
   // makes them worth asking again, and why they were not.
   var notServed = {};
-  // Exchanges whose details were refused (401, 402, 403), and how.
+  // Exchanges whose details were refused (401, 402, 403), and how: answered
+  // so for the page's life, never asked again (refusedAt).
   var refusedExchanges = {};
   /**
    * Exchange details that were not served, in the shape the terminal's
@@ -407,43 +478,6 @@
     if (w.timedOut) body._timedOut = true;
     if (w.dailyLimit) body._dailyLimit = true;
     return body;
-  }
-  // Whether a refused exchange may be asked once more: not yet asked again,
-  // and something asked after the refusal has since been served.
-  function mayAskAgain(key) {
-    var r = refusedExchanges[key];
-    var E = window.Entitlement;
-    return Boolean(r && !r.retried && E && E.lastServed && E.lastServed() > r.after);
-  }
-
-  /**
-   * ExchangeStatus keeps a refusal of an exchange's details (401, 402, 403)
-   * as its answer for the key it was asked with, and asks again only for
-   * another key: a refusal it kept was never asked again, whatever this
-   * client allowed -- the plan reached the feed, quotes were served, and
-   * the hours stayed refused for the page's life. So its load() is asked
-   * through here: once a refused exchange may be asked again (mayAskAgain),
-   * the module's next load of it goes under a key it has not kept the
-   * refusal for, and asks. The key is the proxy's in these apps, and this
-   * client never reads it. A module without refused() is left as it is.
-   */
-  var keyTurns = {};
-  function adoptExchangeStatus() {
-    var S = window.ExchangeStatus;
-    if (!S || typeof S.load !== 'function' || S.load.eodhdShell || typeof S.refused !== 'function') return;
-    var load = S.load;
-    var asked = function (exchange, apiKey, opts) {
-      var key = String(exchange);
-      if (S.refused(exchange) && mayAskAgain(key)) {
-        refusedExchanges[key].armed = true;
-        keyTurns[key] = (keyTurns[key] || 0) + 1;
-      }
-      var turn = keyTurns[key];
-      var k = turn ? (apiKey == null ? '' : String(apiKey)) + ' #' + turn : apiKey;
-      return load.call(this, exchange, k, opts);
-    };
-    asked.eodhdShell = true;
-    S.load = asked;
   }
 
   // How long a request may take before this side gives up: five seconds past
@@ -468,10 +502,29 @@
    * 0, timedOut } -- a dropped connection and this side's deadline told
    * apart, as the terminal's client tells them.
    */
-  // `pinned`: a refusal of this request is kept by its caller and said by
-  // the panel until it is served (Entitlement, keep).
-  function send(url, capability, soft, owned, line, pinned) {
-    if (limited()) return Promise.resolve({ ok: false, status: 429, body: HELD_BODY, held: true });
+  // `mine`: asking()'s -- the kind of request, and whether a line may come
+  // for its failure.
+  function send(url, capability, soft, mine) {
+    var how = mine || {};
+    var E0 = window.Entitlement;
+    // Refused before for the key, the day or the plan: the same answer,
+    // nothing sent (refusedAt), and recorded again as the refusal it is, so
+    // what the screen is told and what the panel knows stay one.
+    var kept = refusedAt[url];
+    if (kept) {
+      var skipKept = soft && kept.status === 403 && E0 && E0.get && E0.get(capability).allowed === true;
+      if (E0 && !skipKept) E0.fromResponse({ status: kept.status, body: kept.body, what: how.what, wait: how.wait, part: how.part, idle: how.idle, kept: true }, capability);
+      return Promise.resolve({ ok: false, status: kept.status, body: kept.body, kept: true });
+    }
+    // Inside the per-minute wait: answered as the 429 was, and recorded as
+    // one, so a line that names it is matched to it like any other. Held
+    // unrecorded, the Benchmark's "per-minute request limit was reached"
+    // was a line about nothing the panel knew, and the panel said the limit
+    // again over it.
+    if (limited()) {
+      if (E0) E0.fromResponse({ status: 429, body: HELD_BODY, what: how.what, wait: how.wait, part: how.part, idle: how.idle, held: true }, capability);
+      return Promise.resolve({ ok: false, status: 429, body: HELD_BODY, held: true });
+    }
     // A deadline on this side too. The proxy has one, but a request that
     // never resolves here leaves the view on "Loading…" with nothing to say.
     var controller = typeof AbortController === 'function' ? new AbortController() : null;
@@ -480,7 +533,7 @@
     var clear = function () { if (timer) clearTimeout(timer); };
     // When it left, in Entitlement's count: a success settles the key's
     // earlier problems only if it was asked for after them.
-    var sent = window.Entitlement && window.Entitlement.mark ? window.Entitlement.mark() : null;
+    var sent = E0 && E0.mark ? E0.mark() : null;
 
     // Marked, so the wrapper below does not record the same answer a second
     // time: this function records it itself, and softDenial depends on being
@@ -491,9 +544,10 @@
         noteLimit(res.status, res.headers && res.headers.get && res.headers.get('retry-after'));
         return res.text().then(function (body) {
           var E = window.Entitlement;
+          if (refusal(res.status)) refusedAt[url] = { status: res.status, body: body };
           var skip = soft && res.status === 403 && E && E.get && E.get(capability).allowed === true;
           if (E && !skip) {
-            E.fromResponse({ status: res.status, body: body, sent: sent, owned: owned, line: line, pinned: pinned }, capability);
+            E.fromResponse({ status: res.status, body: body, sent: sent, what: how.what, wait: how.wait, part: how.part, idle: how.idle }, capability);
           }
           return { ok: res.ok, status: res.status, body: body };
         });
@@ -502,7 +556,7 @@
         clear();
         // A connection that never completed is a problem the page should
         // name, same as a 500 -- status 0, the way browsers report it.
-        if (window.Entitlement) window.Entitlement.fromResponse({ status: 0, body: '', sent: sent, owned: owned, line: line }, capability);
+        if (window.Entitlement) window.Entitlement.fromResponse({ status: 0, body: '', sent: sent, what: how.what, wait: how.wait, part: how.part, idle: how.idle }, capability);
         return { ok: false, none: true, status: 0, body: '', timedOut: timedOut };
       })
       .then(released(sent), releasedOnError(sent));
@@ -552,33 +606,49 @@
         path = resolved.origin === window.location.origin ? resolved.pathname + resolved.search : '';
       } catch (_) { /* as it came */ }
       var own = path.indexOf(BASE + '/') === 0 && path.indexOf(BASE + '/_') !== 0;
-      // A module's own request inside the 429 wait is answered as the 429
-      // was, without leaving the browser (see noteLimit).
-      if (own && !(init && init.eodhdShell) && limited() && typeof Response === 'function') {
+      var shell = Boolean(init && init.eodhdShell);
+      var segments = own ? path.slice(BASE.length + 1).split('?')[0].split('/') : [];
+      var capability = own ? capabilityFor(segments) : null;
+      var how = own ? asking(segments, null, queryOf(path)) : {};
+      // A module's own request refused before for the key, the day or the
+      // plan is answered the same way, without leaving the browser
+      // (refusedAt).
+      var kept = own && !shell ? refusedAt[path] : null;
+      if (kept && typeof Response === 'function') {
+        if (window.Entitlement) window.Entitlement.fromResponse({ status: kept.status, body: kept.body, what: how.what, wait: how.wait, kept: true }, capability);
+        return Promise.resolve(new Response(kept.body, { status: kept.status, headers: { 'content-type': 'application/json' } }));
+      }
+      // One inside the 429 wait is answered as the 429 was (see noteLimit),
+      // and recorded as one (send()).
+      if (own && !shell && limited() && typeof Response === 'function') {
+        if (window.Entitlement) window.Entitlement.fromResponse({ status: 429, body: HELD_BODY, what: how.what, wait: how.wait, held: true }, capability);
         return Promise.resolve(new Response(HELD_BODY, { status: 429, headers: { 'content-type': 'application/json' } }));
       }
       var promise = nativeFetch(input, init);
-      if (init && init.eodhdShell) return promise;
+      if (shell) return promise;
       if (!own) return promise;
 
-      var capability = capabilityFor(path.slice(BASE.length + 1).split('?')[0].split('/'));
       var sent = window.Entitlement && window.Entitlement.mark ? window.Entitlement.mark() : null;
+      var answered = function (status, body) {
+        if (refusal(status)) refusedAt[path] = { status: status, body: body };
+        window.Entitlement.fromResponse({ status: status, body: body, sent: sent, what: how.what, wait: how.wait, part: how.part }, capability);
+      };
       return promise.then(function (res) {
         noteLimit(res.status, res.headers && res.headers.get && res.headers.get('retry-after'));
         if (!window.Entitlement) return res;
         if (res.status === 200) {
-          window.Entitlement.fromResponse({ status: 200, body: '', sent: sent }, capability);
+          window.Entitlement.fromResponse({ status: 200, body: '', sent: sent, what: how.what }, capability);
           return res;
         }
         return res.clone().text().then(function (body) {
-          window.Entitlement.fromResponse({ status: res.status, body: body, sent: sent }, capability);
+          answered(res.status, body);
           return res;
         }, function () {
-          window.Entitlement.fromResponse({ status: res.status, body: '', sent: sent }, capability);
+          answered(res.status, '');
           return res;
         });
       }, function (err) {
-        if (window.Entitlement) window.Entitlement.fromResponse({ status: 0, body: '', sent: sent }, capability);
+        if (window.Entitlement) window.Entitlement.fromResponse({ status: 0, body: '', sent: sent, what: how.what, wait: how.wait, part: how.part }, capability);
         throw err;
       }).then(released(sent), releasedOnError(sent));
     };
@@ -594,11 +664,9 @@
    * refusal is still recorded first, so the frame's panel says the same thing
    * and the view can stay quiet about it.
    */
-  // `mine`: own()'s -- whether the failure is the screen's to name, and
-  // where its line is.
-  function getOrThrow(segments, params, mine) {
-    var owned = (mine && mine.owned) || false;
-    var line = (mine && mine.line) || null;
+  // `opts`: asking()'s (wait, reportsFailure).
+  function getOrThrow(segments, params, opts) {
+    var how = asking(segments, opts, params);
     var capability = capabilityFor(segments);
     var url = BASE + '/' + segments.map(encodeURIComponent).join('/');
     var query = [];
@@ -611,7 +679,18 @@
     }
     if (query.length) url += '?' + query.join('&');
 
-    if (limited()) return Promise.reject(failedError('Too Many Requests', { status: 429 }));
+    // Refused before: the same refusal, nothing sent (refusedAt), recorded
+    // again (send()).
+    var kept = refusedAt[url];
+    if (kept) {
+      if (window.Entitlement) window.Entitlement.fromResponse({ status: kept.status, body: kept.body, what: how.what, wait: how.wait, kept: true }, capability);
+      return Promise.reject(failedError(refusedText(kept.status, kept.body), kept));
+    }
+    // Held inside the per-minute wait, and recorded as a 429 (send()).
+    if (limited()) {
+      if (window.Entitlement) window.Entitlement.fromResponse({ status: 429, body: HELD_BODY, what: how.what, wait: how.wait, held: true }, capability);
+      return Promise.reject(failedError('Too Many Requests', { status: 429 }));
+    }
     var controller = typeof AbortController === 'function' ? new AbortController() : null;
     var timedOut = false;
     var timer = controller ? setTimeout(function () { timedOut = true; controller.abort(); }, timeoutFor(url)) : null;
@@ -624,14 +703,11 @@
       clear();
       noteLimit(res.status, res.headers && res.headers.get && res.headers.get('retry-after'));
       return res.text().then(function (body) {
+        if (refusal(res.status)) refusedAt[url] = { status: res.status, body: body };
         if (window.Entitlement) {
-          window.Entitlement.fromResponse({ status: res.status, body: body, sent: sent, owned: owned, line: line }, capability);
+          window.Entitlement.fromResponse({ status: res.status, body: body, sent: sent, what: how.what, wait: how.wait, part: how.part }, capability);
         }
-        if (!res.ok) {
-          var text = String(body || '').trim();
-          if (!text || text.charAt(0) === '<' || text.length > 200) text = 'EODHD answered ' + res.status + '.';
-          throw failedError(text, { status: res.status, body: body });
-        }
+        if (!res.ok) throw failedError(refusedText(res.status, body), { status: res.status, body: body });
         var d;
         try { d = JSON.parse(body); } catch (_) { throw unreadable('Invalid response from API', res.status); }
         if (notData(d)) throw unreadable('Invalid response from API', res.status);
@@ -639,12 +715,28 @@
       });
     }, function (err) {
       clear();
-      if (window.Entitlement) window.Entitlement.fromResponse({ status: 0, body: '', sent: sent, owned: owned, line: line }, capability);
+      if (window.Entitlement) window.Entitlement.fromResponse({ status: 0, body: '', sent: sent, what: how.what, wait: how.wait, part: how.part }, capability);
       // With the status a module reads (0: nothing came back) and whether
       // this side gave up on it.
       var none = failedError((err && err.message) || 'EODHD did not answer', { status: 0, timedOut: timedOut });
       throw none;
     }).then(released(sent), releasedOnError(sent));
+  }
+  // A fund's holdings under one filter: the object, null when the fund has
+  // none (EODHD answers "NA"), or -- asked with throwErrors -- a failure
+  // thrown with its status.
+  function holdings(symbol, filter, what, opts) {
+    var shaped = function (d) { return (d && typeof d === 'object') ? d : null; };
+    if (opts && opts.throwErrors) return getOrStatus(['v1.1', 'fundamentals', symbol], { filter: filter }, what, undefined, opts).then(shaped);
+    return get(['v1.1', 'fundamentals', symbol], { filter: filter }).then(shaped).catch(function () { return null; });
+  }
+
+  // Upstream's sentence for a failure, or the status when upstream sent a
+  // page of markup.
+  function refusedText(status, body) {
+    var text = String(body || '').trim();
+    if (!text || text.charAt(0) === '<' || text.length > 200) text = 'EODHD answered ' + status + '.';
+    return text;
   }
 
   window.EODHD_API = {
@@ -661,11 +753,9 @@
     // unreadable } } instead of null, for a caller that has to tell an
     // answer with nothing in it from one that was not served, and say why
     // (shell/options.js: an options chain with no contracts read as a
-    // failure). opts.owned: the failure is the screen's to name (ownLine),
-    // or a function that says whether it is, asked when the panel is drawn;
-    // opts.line: where its line is (_own gives both).
+    // failure). opts.wait, opts.part: asking()'s.
     _request: function (segments, params, opts) {
-      var asked = { owned: (opts && opts.owned) || false, line: (opts && opts.line) || null };
+      var asked = { wait: opts ? opts.wait : undefined, part: (opts && opts.part) || null, idle: (opts && opts.idle) || null };
       if (!(opts && opts.why)) return get(segments, params, asked);
       return answerOf(segments, params, asked).then(function (answer) {
         if (!answer) return { notServed: {} };
@@ -683,11 +773,10 @@
      * already out still answer their own callers.
      */
     fresh: function () { inFlight = {}; },
-    // own(), for shell/options.js: whether a method's failure is claimed by
-    // the screen, and where its line is.
-    _own: own,
-    // For the frame, once the modules are loaded (adoptExchangeStatus).
-    _adoptExchangeStatus: adoptExchangeStatus,
+    // The kinds of request (whatOf), for the generator's check of the
+    // modules' data-own-fail marks.
+    _whats: allWhats,
+    _whatOf: whatOf,
     /**
      * The screen a request is asked for. The frame leaves a screen when the
      * view under it is mounted afresh (another address) and the app's tabs
@@ -705,6 +794,14 @@
     // For tests, which load this file once and answer 429 in one case and
     // 500 in the next.
     _clearRateLimit: function () { limitedUntil = 0; },
+    // For tests, which answer one address refused in one case and served
+    // in the next.
+    _forgetRefusals: function () { refusedAt = {}; refusedExchanges = {}; notServed = {}; },
+    // A refusal a person asks about again by hand (shell/options.js, a
+    // ticker picked again): the addresses `test` says yes to are asked anew.
+    _forgetRefused: function (test) {
+      Object.keys(refusedAt).forEach(function (u) { if (test(u)) delete refusedAt[u]; });
+    },
 
     // The terminal's transport for its own backend, which the screener calls
     // by name: `_proxyFetch('screener', params)`. Here it is the local proxy,
@@ -725,7 +822,7 @@
     // not come is the calendar's own line, "Company names did not load",
     // with its Try again.
     _genericProxyFetch: function (path, params) {
-      return getOrThrow(String(path).split('/'), params, own('_genericProxyFetch'));
+      return getOrThrow(String(path).split('/'), params);
     },
 
     // The first argument is the module's apiKey. It is accepted and unused.
@@ -765,9 +862,14 @@
       var known = servedIndexCodes && servedIndexCodes[indexCode(symbol)];
       // An answer that is no JSON (an HTML page with 200) could not be
       // read: said as that by the view ({ unreadable }), not as no answer.
-      // Anything else as get() answers it.
+      // One not served says why, as the terminal's client answers it: {
+      // error, status, ... } (failedOf). It was null for all of them, and a
+      // 403 for a plan without the add-on read "EODHD did not answer, or the
+      // connection dropped" where the view can say the list is not
+      // included in this plan. Null only when nothing was asked.
       return answerOf(['mp', 'unicornbay', 'spglobal', 'comp', symbol], null, known ? undefined : { softDenial: true }).then(function (answer) {
-        if (!answer || !answer.ok) return null;
+        if (!answer) return null;
+        if (noAnswer(answer) || !answer.ok) return Object.assign({ error: 'not_served' }, failedOf(answer));
         var d;
         try { d = JSON.parse(answer.body); } catch (_) { return { error: 'unreadable', unreadable: true }; }
         return notData(d) ? { error: 'unreadable', unreadable: true } : d;
@@ -781,14 +883,22 @@
     // The terminal's: the last priced quote seen for a symbol, which What-If
     // keeps using at the limit. The open apps keep none: null.
     lastQuote: function () { return null; },
+    // The terminal's: whether a failure is its server refusing the symbol
+    // itself (a 400 naming "s" or "symbol"; it will not pass "&" or "%" on),
+    // which the portfolio says as "not available" with no Try again. The
+    // open apps' proxy has no such guard and no failure here names a
+    // parameter: asked the same, it answers the same.
+    notAvailable: function (err) {
+      return Boolean(err && typeof err === 'object' && Number(err.status) === 400 && (err.parameter === 's' || err.parameter === 'symbol'));
+    },
     // Asked with throwErrors, a quote's failure is named where it was asked
     // for: a typed code's check under its field, the portfolio's "without a
     // price", What-If's and Macro's lines.
     getRealTimeData: function (_k, symbol, opts) {
-      if (opts && opts.throwErrors) return getOrStatus(['real-time', symbol], null, 'The quote', 'quote', own('getRealTimeData', opts));
+      if (opts && opts.throwErrors) return getOrStatus(['real-time', symbol], null, 'The quote', 'quote', opts);
       // Asked plainly, the quote answers null and its caller cannot say why:
       // the screen's only where the caller says it says it.
-      return get(['real-time', symbol], null, opts && opts.reportsFailure ? own('getRealTimeData', opts) : undefined);
+      return get(['real-time', symbol], null, opts);
     },
     // throwErrors: the sentiment view tells "no such ticker" from "the
     // search did not answer" (a 500, no connection) and offers to ask again;
@@ -811,14 +921,15 @@
       // plan (401, 402, 403) and the per-minute limit (429) from no answer
       // (0, 5xx): it offered "Press Enter to try again" next to "Not included
       // in this plan", and every Enter asked again, a 429 included.
-      // Its failure is the field's note only where every search of the app
-      // says one (meta.json ownFailures; or a caller's reportsFailure).
+      // The panel waits for the field's note only where every search of the
+      // app says one (meta.json lineKinds; or a caller's reportsFailure).
       // The options chain's autocomplete answers a 500 by clearing its
       // list and saying nothing, with the same arguments as Enter's check
-      // that does say it: owned there, the failure had no message at all.
+      // that does say it: waited for there, the panel came late to a
+      // failure no line would name.
       // A search this side gave up on says so (timedOut), and the field
       // says it took too long.
-      return answerOf(['search', query], null, own('searchStocks', opts)).then(function (answer) {
+      return answerOf(['search', query], null, opts).then(function (answer) {
         if (noAnswer(answer)) throw failedError('The ticker search did not answer', answer);
         if (!answer.ok) throw failedError('The ticker search answered ' + answer.status, answer);
         var rows;
@@ -849,7 +960,7 @@
       // only adds the status. The headlines are a screen's main data and
       // its failure the panel's, unless the caller says it names it
       // (opts.reportsFailure).
-      var asked = own('getNews', o);
+      var asked = { reportsFailure: o.reportsFailure };
       if (o.throwErrors) return getOrStatus(['news'], p, 'The news request', undefined, asked);
       return get(['news'], p, asked);
     },
@@ -890,7 +1001,7 @@
       var failed = function (why) { var none = {}; Object.defineProperty(none, '_failed', { value: why, enumerable: false }); return none; };
       // The heatmap's tiles and the index cards are what their screens are
       // for; the portfolio's quotes are its "N without a price" (meta.json).
-      return answerOf(['real-time', list[0]], list.length > 1 ? { s: list.slice(1).join(',') } : {}, own('getBatchRealTime', opts))
+      return answerOf(['real-time', list[0]], list.length > 1 ? { s: list.slice(1).join(',') } : {}, opts)
         .then(function (answer) {
           if (noAnswer(answer) || !answer.ok) return failed(failedOf(answer));
           var body;
@@ -964,7 +1075,7 @@
     // Asked with throwErrors (the portfolio's), a failure is named by the
     // ticker it left out.
     getFundamentals: function (_k, symbol, opts) {
-      if (opts && opts.throwErrors) return getOrStatus(['v1.1', 'fundamentals', symbol], null, 'The fundamentals', 'object', own('getFundamentals', opts)).then(stripMorningstar);
+      if (opts && opts.throwErrors) return getOrStatus(['v1.1', 'fundamentals', symbol], null, 'The fundamentals', 'object', opts).then(stripMorningstar);
       return get(['v1.1', 'fundamentals', symbol]).then(stripMorningstar);
     },
 
@@ -976,15 +1087,15 @@
      * holdings under a different filter. The caller tries the first and falls
      * back, so both return null rather than throwing when the shape is wrong.
      */
-    getFundHoldings: function (_k, symbol) {
-      return get(['v1.1', 'fundamentals', symbol], { filter: 'ETF_Data::Holdings' })
-        .then(function (d) { return (d && typeof d === 'object') ? d : null; })
-        .catch(function () { return null; });
+    // opts.throwErrors (the terminal's signature): a failure throws with
+    // its status, as the terminal's does -- the portfolio's templates ask
+    // so and say why a fund's holdings did not load; dropped here, a 403, a
+    // 429 and a 500 all read as a fund with no holdings.
+    getFundHoldings: function (_k, symbol, opts) {
+      return holdings(symbol, 'ETF_Data::Holdings', 'The fund’s holdings', opts);
     },
-    getMutualFundTopHoldings: function (_k, symbol) {
-      return get(['v1.1', 'fundamentals', symbol], { filter: 'MutualFund_Data::Top_Holdings' })
-        .then(function (d) { return (d && typeof d === 'object') ? d : null; })
-        .catch(function () { return null; });
+    getMutualFundTopHoldings: function (_k, symbol, opts) {
+      return holdings(symbol, 'MutualFund_Data::Top_Holdings', 'The fund’s top holdings', opts);
     },
 
     /**
@@ -1000,9 +1111,9 @@
      * shape the caller already checks for rather than as a rejection.
      */
     // opts.fresh: a Try again pressed for the holidays themselves (the
-    // terminal's signature, dropped here). It asks now, whatever the last
-    // refusal: the Holidays tab's Try again waited for another feed to be
-    // served, and on that tab there is none, so it sent nothing.
+    // terminal's signature, dropped here). It asks now after a failure that
+    // is not a refusal: the Holidays tab's Try again waited for another feed
+    // to be served, and on that tab there is none, so it sent nothing.
     getExchangeHolidaysV2: function (_k, exchange, opts) {
       // "Not found" is an answer and the caller keeps it; "not served" is not
       // one. A spent limit, a refused key and a bad minute upstream all came
@@ -1023,49 +1134,28 @@
       var E = window.Entitlement;
       var key = String(exchange);
       // A refusal of the key, the day or the plan (401, 402, 403) is not
-      // asked again by a repeat or a Try again ({ fresh }): each was the
-      // same refusal -- six requests in three minutes -- and brought the
-      // panel back over the heatmap each time. It is asked once more when
-      // something asked after it has been served (the day reset, the plan
-      // reaches the feed again; askRefusalAgain); refused again, it is kept
-      // for the page's life. Either refusal is recorded as any is: 401 and
-      // 402 are the panel's, a 403 the screen's while its line is drawn.
+      // asked again, by a repeat, a Try again ({ fresh }) or anything else
+      // served meanwhile: each was the same refusal -- six requests in three
+      // minutes -- and brought the panel back over the heatmap each time.
+      // It is kept for the page's life, as the same address is (refusedAt):
+      // 401 and 402 the panel's, a 403 the screen's while its line is drawn.
       var refused = refusedExchanges[key];
-      var again = false;
-      if (refused) {
-        if (!(refused.armed || mayAskAgain(key))) return Promise.resolve(notServedBody(refused.why));
-        refused.retried = true;
-        refused.armed = false;
-        again = true;
-      }
-      adoptExchangeStatus();
-      // Not served, it is the screen's to say where the app says so
-      // (meta.json ownFailures) and ExchangeStatus says the screens say it
-      // (says(): a failure, with its line and Try again, or the plan's 403,
-      // "Market hours are not included in this plan"; an older module,
-      // failed()) -- and the panel's while no such line is on the page
-      // (Entitlement: named). Undecided (undefined) while the module has no
-      // answer kept: it keeps one only after this client has answered.
-      var kept = function () {
+      if (refused) return Promise.resolve(notServedBody(refused.why));
+      // A failure of hours no screen reads now -- the US market's under the
+      // heatmap's Crypto or Forex tab -- is said by nobody there, neither
+      // the panel nor a line (ExchangeStatus.inUse false); its line comes
+      // back with the tab that uses it. The panel came up over Crypto a few
+      // seconds after the S&P 500's hours failed, and moved the page.
+      var idle = function () {
         var S = window.ExchangeStatus;
-        if (!S) return false;
-        if (typeof S.isLoaded === 'function' && !S.isLoaded(exchange)) return undefined;
-        if (typeof S.says === 'function') return Boolean(S.says(exchange));
-        return Boolean(typeof S.failed === 'function' && S.failed(exchange));
+        return Boolean(S && typeof S.inUse === 'function' && S.inUse(exchange) === false);
       };
       var ask = function () {
         var asked = E && E.now ? E.now() : 0;
-        // A refused key or a spent day is kept by ExchangeStatus as its
-        // answer, and the screens draw no line for it (they leave it to the
-        // panel). Refused again when asked once more, after other feeds were
-        // served, it is this feed's and not the key's: the panel says it
-        // until the hours are served (pinned), not until the next quotes.
-        var mine = Object.assign(own('getExchangeHolidaysV2', opts, kept), again ? { fresh: true, pinned: true } : {});
-        return answerOf(['exchange-details', exchange], null, mine).then(function (answer) {
+        return answerOf(['exchange-details', exchange], null, { idle: idle }).then(function (answer) {
           var d = null;
           var parsed = false;
           if (answer && answer.ok) { try { d = JSON.parse(answer.body); parsed = true; } catch (_) { d = null; } }
-          if (answer && answer.ok) delete refusedExchanges[key];
           if (d && typeof d === 'object' && d.TradingHours) { delete notServed[key]; return v1ExchangeToV2(d, exchange); }
           // A 200 that is no exchange's details (an HTML page, {"message"},
           // or nothing at all: null, [] or {}) could not be read: not "no
@@ -1078,20 +1168,15 @@
           }
           if ((answer && answer.ok) || (answer && answer.status === 404)) { delete notServed[key]; return { _notFound: true }; }
           var why = failedOf(answer);
-          if (why.status === 401 || why.status === 402 || why.status === 403) {
-            delete notServed[key];
-            refusedExchanges[key] = { why: why, after: asked + 1, retried: again };
-          } else {
-            delete refusedExchanges[key];
-            notServed[key] = { after: asked + 1, why: why };
-          }
+          delete notServed[key];
+          if (refusal(why.status)) refusedExchanges[key] = { why: why };
+          else notServed[key] = { after: asked + 1, why: why };
           return notServedBody(why);
         // Anything that throws on the way is a request not served, which
         // ExchangeStatus keeps and asks again; { _notFound } with no _failed
         // is a 404's "no such exchange", kept for good.
         }).catch(function () { return notServedBody({ status: 0 }); });
       };
-      if (again) return ask();
       if (opts && opts.fresh) delete notServed[key];
       var standing = notServed[key];
       if (standing && E && E.servedSince) {
@@ -1121,14 +1206,14 @@
       }
       // Asked with throwErrors, a history is named where it was missed: the
       // portfolio's charts, a rate's history, an import's prices.
-      return getOrStatus(['eod', symbol], p, 'The price history request', 'list', own('getHistoricalData', opts));
+      return getOrStatus(['eod', symbol], p, 'The price history request', 'list', opts);
     },
     // opts.throwErrors: a failure throws with its status (the terminal's
     // signature). Macro read a 500 as "EODHD did not answer" under the
     // panel's "returned HTTP 500".
     // Asked with throwErrors, it is Macro's own line.
     getMacroIndicator: function (_k, country, indicator, opts) {
-      if (opts && opts.throwErrors) return getOrStatus(['macro-indicator', country], { indicator: indicator }, 'The economic data request', undefined, own('getMacroIndicator', opts));
+      if (opts && opts.throwErrors) return getOrStatus(['macro-indicator', country], { indicator: indicator }, 'The economic data request', undefined, opts);
       return get(['macro-indicator', country], { indicator: indicator });
     },
     // SEC Form 4 filings, which PortfolioHealth reads through InsiderTx. It
@@ -1148,7 +1233,7 @@
       if (sym.indexOf('.') === -1) sym = sym + '.US';
       var params = { 'page[offset]': offset, 'page[limit]': limit };
       // Portfolio Health names a failure here in a line of its own.
-      if (o.throwErrors) return getOrStatus(['sec-filings', sym, 'form4'], params, 'The insider filings', undefined, own('getInsiderForm4', o));
+      if (o.throwErrors) return getOrStatus(['sec-filings', sym, 'form4'], params, 'The insider filings', undefined, o);
       return get(['sec-filings', sym, 'form4'], params);
     },
 
@@ -1166,7 +1251,7 @@
     getForexRate: function (_k, from, to, _noCross, fails) {
       if (from === to) return Promise.resolve(1);
       var collect = Array.isArray(fails);
-      var asked = collect ? getOrStatus(['real-time', from + to + '.FOREX'], null, 'The rate', 'quote', own('getForexRate')) : get(['real-time', from + to + '.FOREX']);
+      var asked = collect ? getOrStatus(['real-time', from + to + '.FOREX'], null, 'The rate', 'quote') : get(['real-time', from + to + '.FOREX']);
       return asked
         .then(function (d) { return (d && d.close) || null; })
         .catch(function (e) { if (collect) fails.push(e || {}); return null; });
@@ -1227,11 +1312,13 @@
       // What failed (screenerFailure), as the terminal's client keeps it, for
       // the heatmap's line; null when the rows came. Rows only: a body of
       // another shape ({"message"} with 200) could not be read.
+      // The heatmap's prices, asked of the screener: its line under the map
+      // names them "quotes", and so is their failure kept.
       return answerOf(['screener'], {
         filters: JSON.stringify(filters || defaults),
         limit: limit || 50,
         sort: 'market_capitalization.desc',
-      }).then(function (answer) {
+      }, { what: 'quotes' }).then(function (answer) {
         if (noAnswer(answer) || !answer.ok) { api.screenerFailure = failedOf(answer); return null; }
         var body;
         try { body = JSON.parse(answer.body); } catch (_) { api.screenerFailure = failedOf(answer, true); return null; }

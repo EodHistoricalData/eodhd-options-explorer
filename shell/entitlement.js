@@ -27,20 +27,26 @@
  * to print.
  */
 (function () {
-  var state = {};     // capability -> { allowed, reason }    (plan verdicts)
-  var problems = {};  // capability -> { kind, status, reason } (request problems)
-  // Problems the screen claims to say itself: the request's caller shows its
-  // own line and its own Try again (api.js marks the request `owned`). The
-  // panel above was a second message about one failure -- "EODHD did not
-  // answer … Nothing below is missing data" over the options chain's "Part
-  // of the options chain did not load", and over the portfolio's "1 without
-  // a price". Kept apart, so they never take the place of the panel's.
+  var state = {};     // capability -> { allowed, reason, whats }    (plan verdicts)
+  // Request problems, one per feed and kind of request ("<capability>
+  // <what>"): { kind, status, reason, capability, what, seq, ... }. Kept
+  // per capability alone, a 500 of the portfolio's fundamentals and one of
+  // its economic data were one problem, and whichever came last spoke for
+  // both.
   //
-  // A claim is not a line. The panel leaves a claimed failure to the screen
-  // only while a line of the screen's that says it is on the page (named()):
-  // a list of company names that failed for one exchange had no line at all,
-  // and with the panel gone nothing said it.
-  var said = {};      // capability -> { kind, status, reason, owner, line, since, seen }
+  // `what` is the kind of request, in the words a line of the screen's says
+  // it names: data-own-fail="quotes", "history", "exchange-hours" (api.js,
+  // whatOf). Whether the panel or the screen says a failure is decided by
+  // that, on the page (said()): the panel speaks for a failure only while
+  // no line of the screen's names it. Lists of a line's words per app said
+  // it before, and every line not in them -- the portfolio's Allocation,
+  // Dividends, Benchmark, Monte Carlo, Correlation, Backtest and What-If --
+  // had the panel over it.
+  var problems = {};
+  // The kinds of request served on this page (keyOf), and where the count
+  // stood when they were: a failure of one asked after that leaves part of
+  // its set below.
+  var servedKinds = {};
   var listeners = [];
   // A count of what has happened, in order: every request sent and every
   // problem recorded takes the next number. It is how a success is known to
@@ -204,41 +210,41 @@
     return verdict;
   }
 
-  // A refused key (401) and a spent day (402) are never the screen's,
-  // whoever asked: no line has a word of .env or of when the day resets.
-  function claimable(res, status) {
-    return Boolean(res && res.owned) && status !== 401 && status !== 402;
-  }
-
   /** Where we are in the count, without taking a number for a request. */
   function now() { return seq; }
 
+  // Where a request problem is kept: its feed and its kind of request.
+  function keyOf(capability, what) { return capability + ' ' + (what || ''); }
+  function has(map, k) { return Object.prototype.hasOwnProperty.call(map, k); }
+
   function record(res, capability) {
     var status = res && res.status;
+    var what = (res && res.what) || '';
     var verdict;
 
     if (status === 200) {
       verdict = { allowed: true, reason: null };
       if (capability) {
         state[capability] = verdict;
-        // A success settles any earlier problem on the same feed: the quota
-        // reset, the network came back, the key was fixed. Earlier means
-        // asked for earlier: with two requests to one feed in flight, the
-        // second can be refused before the first comes back served, and the
-        // first must not take the second's refusal off the screen. A caller
-        // that does not say when it asked is taken at its word, as before.
+        // A success settles an earlier problem of the same kind of request
+        // on the same feed: the quota reset, the network came back, the
+        // feed answers again. Earlier means asked for earlier: with two
+        // requests to one feed in flight, the second can be refused before
+        // the first comes back served, and the first must not take the
+        // second's refusal off the screen. A caller that does not say when
+        // it asked is taken at its word, as before.
+        //
+        // Only its own kind. Any answer at all used to settle a request
+        // that never came back, as proof the network was back: the
+        // calendar's feeds all dropped, the screener it asks for market caps
+        // answered, and the panel went after a second while the line under
+        // the tabs still said "See the panel above".
         var sent = res ? res.sent : null;
-        [problems, said].forEach(function (map) {
-          if (map[capability] && (sent == null || map[capability].seq <= sent)) delete map[capability];
-        });
+        if (!has(servedKinds, keyOf(capability, what))) servedKinds[keyOf(capability, what)] = seq;
+        var mine = problems[keyOf(capability, what)];
+        if (mine && (sent == null || mine.seq <= sent)) delete problems[keyOf(capability, what)];
         clearKeyWide(capability, sent);
         if (sent != null && sent > served) served = sent;
-        // A request that never got an answer (status 0: offline, a dropped
-        // connection) says nothing about its feed, only about the network --
-        // and any answer at all proves the network is back. Kept per feed,
-        // "EODHD did not answer" stayed up after the heatmap's Refresh and the
-        // calendar's next month had loaded, because those re-ask other feeds.
-        clearNetworkProblems();
         notify(capability);
       }
       return verdict;
@@ -263,14 +269,17 @@
       // to the page where one pays.
       verdict = { allowed: false, reason: readableReason(res.body, capability) };
       if (capability) {
-        // A 403 the screen claims is its to say -- the exchange's hours, "not
-        // included in this plan" in their own line -- and the panel's only
-        // while no line of the screen's says it (denied()). Over a working
-        // heatmap the panel read "Not included in this plan … Forbidden" for
-        // the hours alone, and came back with every repeat.
-        var kept = claimable(res, status) ? claim(state[capability], verdict, res) : verdict;
-        state[capability] = kept;
-        if (kept.owner) watch();
+        // Which kinds of request the feed refused, for the lines that name
+        // them: a 403 is the screen's while a line of its says "not
+        // included in this plan" (the exchange's hours in their own line),
+        // the panel's while none does (said()).
+        var before = state[capability] && state[capability].allowed === false ? state[capability] : null;
+        // Said again from memory, and still standing: nothing new.
+        if (res.kept && before && (before.whats || []).indexOf(what) !== -1) return verdict;
+        var kept = Object.assign({ status: status, capability: capability, whats: [what] }, verdict);
+        if (before) (before.whats || []).forEach(function (w) { if (kept.whats.indexOf(w) === -1) kept.whats.push(w); });
+        state[capability] = carry(before, kept, res);
+        watch();
         notify(capability);
       }
       return verdict;
@@ -296,91 +305,72 @@
   /**
    * Where a request's problem is kept, and who is told.
    *
-   * `res.owned` says the screen that asked names the failure itself (its
-   * own line, its own Try again): true, or a function asked when the panel
-   * is drawn, for a caller that knows only later -- an exchange's status,
-   * whose line comes once ExchangeStatus keeps the failure; a later page of
-   * the options chain, the chain's own once its first page came with
-   * contracts. `res.line`: where that line is on the page (lineOnScreen).
-   * A claimed problem goes to `said`, and the panel's own stay where they
-   * were.
-   *
-   * Only what such a line says as well as the panel does is claimed
-   * (lineSays): EODHD's error, no answer, the per-minute limit. A refused
-   * key and a spent day are the panel's whoever asked -- the line has no
-   * word of .env, or of when the day resets. An owner asked later used to
-   * take them too: a 401 on the options chain's second page hid the panel
-   * that had to say the key was refused.
+   * `res.what`: the kind of request (api.js, whatOf) -- what a line of the
+   * screen's names in its data-own-fail. `res.wait`: a line of the screen's
+   * may come for it (the app's screens name that kind themselves, or the
+   * caller said it does): true, or a function asked when the panel is
+   * drawn, for a caller that knows only later -- a later page of the
+   * options chain is the chain's once its first page came with contracts.
+   * The panel then waits a moment for the line rather than come up and go.
+   * `res.part`: data of the same set came, so something below is partial
+   * (the options chain's first page, before its later pages failed).
+   * `res.held`: a request the client did not send, inside the per-minute
+   * wait. `res.idle`: a function that says no screen uses the request now.
+   * `res.kept`: a refusal the client answered again from what it was told
+   * before, unsent -- no news about the key.
    */
-  function lineSays(p) { return p.kind === 'upstream' || p.status === 429; }
-
   function keep(capability, p, res) {
-    // A refused key or a spent day its feed keeps as its answer, with no
-    // line of the screen's for it (`res.pinned`): the panel says it until
-    // that feed is served. Settled by any other feed's answer, an exchange's
-    // 401 went from the panel when the next quotes came, and nothing said
-    // why the hours were missing.
-    if (res && res.pinned && (p.status === 401 || p.status === 402)) p.pinned = true;
-    if (claimable(res, p.status) && lineSays(p)) {
-      said[capability] = claim(said[capability], p, res);
-      watch();
-    } else {
-      // The panel's, whoever asked. A screen that says it too -- the
-      // options chain's "Part of the options chain did not load" over a
-      // second page refused for the key -- still has something missing
-      // below, and the panel does not say otherwise (partial).
-      if (res && res.owned) claim(problems[capability], p, res);
-      problems[capability] = p;
-      if (p.owner) watch();
-    }
+    p.capability = capability;
+    p.what = (res && res.what) || '';
+    // A refused key and a spent day are the panel's from the first refusal,
+    // and stay until a request of the same kind is served with the key.
+    // They were kept only once asked a second time, and settled by any
+    // other feed's answer: the heatmap's hours refused for the key had the
+    // panel for a moment, then a line under the map once the quotes came,
+    // and the page moved each time.
+    if (p.status === 401 || p.status === 402) p.pinned = true;
+    if (res && res.held) p.held = true;
+    if (res && res.kept) p.kept = true;
+    // When it was asked (or, held or answered from memory, recorded).
+    p.asked = res && res.sent != null ? res.sent : p.seq;
+    var k = keyOf(capability, p.what);
+    // Said again from memory, and still standing: nothing new.
+    if (p.kept && problems[k] && problems[k].status === p.status) return;
+    problems[k] = carry(problems[k], p, res);
+    watch();
     notify(capability);
   }
 
-  // A claim, carried over from the one it replaces when the cause is the
-  // same: a repeat that fails as the last one did is the same failure, and
-  // its line -- already on the page, or already waited for -- stands. The
-  // panel came back with each repeat and pushed the page down each time.
-  function claim(before, p, res) {
-    p.owner = res.owned;
-    p.line = res.line || null;
-    var same = before && before.owner && before.kind === p.kind && before.status === p.status && before.allowed === p.allowed;
+  // What a record carries over from the one it replaces when the cause is
+  // the same: a repeat that fails as the last one did is the same failure,
+  // and its line -- already on the page, or already waited for -- stands.
+  // The panel came back with each repeat and pushed the page down each time.
+  function carry(before, p, res) {
+    p.wait = (res && res.wait) || null;
+    p.part = (res && res.part) || null;
+    p.idle = (res && res.idle) || null;
+    var same = before && before.kind === p.kind && before.status === p.status && before.allowed === p.allowed;
     p.since = same ? before.since : Date.now();
     p.seen = same ? before.seen : 0;
-    // An owner that said yes says it of the repeat too: ExchangeStatus
-    // drops its failure while it asks again, and the answer is recorded
-    // before it keeps the new one -- the panel came up for that moment.
-    if (same && before.owner === true) p.owner = true;
+    p.shown = same ? Boolean(before.shown) : false;
+    if (same && before.wait === true) p.wait = true;
+    if (same && before.part && !p.part) p.part = before.part;
     return p;
   }
 
-  // Whether the claim's owner says it now: true, false, or undefined while
-  // it cannot tell yet -- the options chain's first page still out, the
-  // exchange's status still loading. A function is asked until it answers
-  // yes, and kept so: a retry clears the module's failure while it asks
-  // again.
-  function owns(p) {
-    if (!p || !p.owner) return false;
-    if (p.owner === true) return true;
-    var yes;
-    try { yes = p.owner(); } catch (_) { yes = false; }
-    if (yes == null) return undefined;
-    if (yes) p.owner = true;
-    return Boolean(yes);
-  }
-
   /**
-   * Is a line of the screen's on the page that says this failure?
+   * The screen's own failure lines, as the page shows them.
    *
-   * Read from the page: an element of the view (never the shell's own
-   * panels) that is drawn and has words, matching one of the claim's `line`
-   * entries -- a CSS selector, "selector~words" for one whose visible text
-   * must also match the words (a regular expression, any case), or
-   * "~words" for the words anywhere in the view's visible text. The
-   * modules mark such a line data-own-fail="<what>" (the apps' meta.json
-   * ownLines lists that first); the words are for a line not marked yet. No
-   * `line`: a line marked as the screen's own, or a RateLimitWait.FailNote.
+   * A module marks a line that names a request's failure
+   * data-own-fail="<what>" -- the kind of request: "quotes", "history",
+   * "exchange-hours" -- in every layout, whatever else the line says. Read
+   * from the page: an element of the view (never the shell's own panels)
+   * that is drawn and has words. A line that sends the reader to the panel
+   * ("… did not load. See the panel above.", marked data-see-panel too)
+   * names the failure only to point at it: the panel says it, and stays
+   * while that line is drawn.
    */
-  var DEFAULT_LINE = ['[data-own-fail]', '[data-rl-fail]'];
+  var POINTS = /see the panel above/i;
   function viewRoots() {
     if (typeof document === 'undefined' || !document.querySelectorAll) return [];
     var views = Array.prototype.slice.call(document.querySelectorAll('[data-app-view]'));
@@ -404,13 +394,16 @@
   // The words of `el` a reader can see: the text of what is drawn, never
   // that of a hidden element inside it. "Could not check AAPL" in a <p
   // hidden> named a failure nobody saw.
-  function visibleText(el) {
+  // `words`: the line's own words, without its buttons' -- a line whose
+  // sentence is hidden and whose Try again shows names nothing.
+  function visibleText(el, words) {
     if (!el) return '';
     if (typeof document === 'undefined' || !document.createTreeWalker) return String(el.textContent || '');
     var out = [];
     var walker = document.createTreeWalker(el, 5 /* SHOW_ELEMENT | SHOW_TEXT */, {
       acceptNode: function (n) {
         if (n.nodeType === 3) return 1; /* FILTER_ACCEPT */
+        if (words && (n.tagName === 'BUTTON' || n.getAttribute('role') === 'button')) return 2;
         return unseen(n) ? 2 /* FILTER_REJECT */ : 3; /* FILTER_SKIP */
       },
     });
@@ -423,116 +416,204 @@
     for (var a = el; a && a.nodeType === 1; a = a.parentElement) {
       if (unseen(a)) return false;
     }
-    return Boolean(visibleText(el).trim());
-  }
-  function lineOnScreen(line) {
-    var roots = viewRoots();
-    for (var r = 0; r < roots.length; r++) {
-      if (lineIn(roots[r], line)) return true;
-    }
-    return false;
-  }
-  function lineIn(root, line) {
-    var specs = [].concat(line || DEFAULT_LINE);
-    for (var i = 0; i < specs.length; i++) {
-      var spec = String(specs[i] || '');
-      var cut = spec.indexOf('~');
-      var sel = cut === -1 ? spec : spec.slice(0, cut);
-      var words = null;
-      if (cut !== -1) {
-        try { words = new RegExp(spec.slice(cut + 1), 'i'); } catch (_) { continue; }
-      }
-      if (!sel) {
-        if (words && words.test(visibleText(root))) return true;
-        continue;
-      }
-      var found;
-      try { found = root.querySelectorAll(sel); } catch (_) { continue; }
-      for (var j = 0; j < found.length; j++) {
-        if (drawn(found[j]) && (!words || words.test(visibleText(found[j])))) return true;
-      }
-    }
-    return false;
+    return Boolean(visibleText(el, true).trim());
   }
 
-  // How long a claim waits for its line before the panel says the failure
-  // after all, counted from when nothing is in flight any more: the screen
-  // draws its lines once its loads have settled. And how long a line that
-  // said it may be gone while the screen asks again. Both short: what no
-  // line says is the panel's, as it was before anything was claimed.
+  /**
+   * What a line's data-own-fail names, when the value is not a kind of
+   * request of its own (api.js, whatOf): a line about several feeds at
+   * once, or a word the modules use for one. Each value is checked against
+   * these and the client's kinds when an app is generated
+   * (scripts/generate.js), so a mark the shell cannot read stops the build.
+   */
+  //
+  // A value in OTHER names no request of the data client -- the AI
+  // assistant's own service, the app's saved settings -- and so no failure
+  // the panel keeps; the line still names a failure below (partial()).
+  var OTHER = ['ai', 'ai-data', 'ai-tokens', 'backtest', 'preferences', 'storage'];
+  var NAMES = {
+    // A code typed in a search field is checked with a quote
+    // (SymbolCode.listed): the field's line says that failure too.
+    search: ['search', 'quotes'],
+    // The portfolio's economic data: its rates and yields are quotes
+    // (US10Y.GBOND), said in the same line as its indicators.
+    macro: ['macro', 'quotes'],
+    calendar: ['earnings', 'dividends', 'splits', 'ipos', 'economic-events'],
+    feeds: ['earnings', 'dividends', 'splits', 'ipos', 'economic-events'],
+    holidays: ['exchange-hours'],
+    prices: ['quotes'],
+    rates: ['quotes'],
+    benchmark: ['history'],
+    index: ['index-list', 'index-constituents'],
+  };
+  function whatsNamed(value) {
+    var out = [];
+    String(value == null ? '' : value).split(/[\s,]+/).forEach(function (v) {
+      if (!v) return;
+      [].concat(has(NAMES, v) ? NAMES[v] : v).forEach(function (w) { if (out.indexOf(w) === -1) out.push(w); });
+    });
+    return out;
+  }
+
+  // The screen's failure lines on the page: the kinds each names, and
+  // whether it points at the panel.
+  function ownLines() {
+    var out = [];
+    var roots = viewRoots();
+    for (var r = 0; r < roots.length; r++) {
+      var found;
+      try { found = roots[r].querySelectorAll('[data-own-fail]'); } catch (_) { found = []; }
+      for (var i = 0; i < found.length; i++) {
+        var el = found[i];
+        if (!drawn(el)) continue;
+        out.push({ whats: whatsNamed(el.getAttribute('data-own-fail')), points: el.getAttribute('data-see-panel') === 'true' || POINTS.test(visibleText(el)) });
+      }
+    }
+    return out;
+  }
+
+  // What the page says of a failure of these kinds of request: 'points' (a
+  // line sends the reader to the panel), 'names' (a line says it), or ''.
+  function onScreen(whats, lines) {
+    var found = '';
+    for (var i = 0; i < lines.length; i++) {
+      var hit = false;
+      for (var j = 0; j < lines[i].whats.length && !hit; j++) hit = whats.indexOf(lines[i].whats[j]) !== -1;
+      if (!hit) continue;
+      if (lines[i].points) return 'points';
+      found = 'names';
+    }
+    return found;
+  }
+
+  // The kinds of request a failure is about. The per-minute limit is the
+  // key's, whichever request met it: a line that names it for one names it
+  // for all, a request the client held inside the wait included (api.js
+  // records one as a 429). The panel's "Too many requests at once" stood
+  // over the Benchmark's "The price history for the comparison did not
+  // load: EODHD's per-minute request limit was reached", about the
+  // fundamentals' 429 that no line on that tab said.
+  function whatsOf(p) {
+    if (p.whats) return p.whats;
+    if (p.status !== 429) return [p.what || ''];
+    var out = [];
+    for (var k in problems) {
+      if (has(problems, k) && problems[k].status === 429 && out.indexOf(problems[k].what) === -1) out.push(problems[k].what);
+    }
+    return out;
+  }
+
+  // How long a failure waits for its line before the panel says it,
+  // counted from when nothing is in flight any more: the screen draws its
+  // lines once its loads have settled. Short: what no line says is the
+  // panel's.
   function waitMs() { return Number(window.EODHD_LINE_WAIT_MS) >= 0 ? Number(window.EODHD_LINE_WAIT_MS) : 1200; }
   var settledAt = 0;
   // When a wait counted from `t` ends.
   function graceEnd(t) { return Math.max(t || 0, settledAt) + waitMs(); }
 
-  /**
-   * The screen says this failure itself: its owner claims it, and a line
-   * that says it is on the page -- or was a moment ago, while the screen
-   * asks again (a Try again takes the line off until the answer comes).
-   */
-  function named(p) {
-    if (owns(p) !== true) return false;
-    if (lineOnScreen(p.line)) { p.seen = Date.now(); return true; }
-    return held(p);
+  // Whether a line of the screen's may come for it: true, false, or
+  // undefined while the caller cannot tell yet (the options chain's first
+  // page still out). A function is asked until it answers yes, and kept so.
+  function waits(p) {
+    if (!p || !p.wait) return false;
+    if (p.wait === true) return true;
+    var yes;
+    try { yes = p.wait(); } catch (_) { yes = false; }
+    if (yes == null) return undefined;
+    if (yes) p.wait = true;
+    return Boolean(yes);
   }
-  // A line that said it, gone a moment ago while the screen asks again.
-  function held(p) {
-    return Boolean(p.seen) && (inFlight() > 0 || Date.now() < graceEnd(p.seen));
-  }
-
-  // Claimed, or not decided yet, with no line yet, and the screen still
-  // busy drawing it: the panel waits rather than come up for a moment and
-  // go. An owner that could not tell yet waited for nothing: the options
-  // chain's second page failed while the first was out, the panel came up,
-  // and went when the first came with contracts.
+  // Waited for, with no line yet, and the screen still busy drawing it.
+  // Not once the panel has said it: a request going out meanwhile (the
+  // repeat after a 429's wait) took the panel down and the failed repeat
+  // put it back, and the page moved each time.
   function waiting(p) {
-    if (!p || p.seen || owns(p) === false) return false;
+    if (!p || p.seen || p.shown || waits(p) === false) return false;
     return inFlight() > 0 || Date.now() < graceEnd(p.since);
   }
-
-  // The screen's to say, for now: the panel leaves it out.
-  function screensOwn(p) { return named(p) || waiting(p); }
+  // Whether no screen on the page uses the request now (an exchange's
+  // hours under the heatmap's Crypto tab: ExchangeStatus.inUse).
+  function idle(p) {
+    if (!p || typeof p.idle !== 'function') return false;
+    try { return Boolean(p.idle()); } catch (_) { return false; }
+  }
+  // Whether data of the same set came, so what is below is partial.
+  function partOf(p) {
+    if (!p || !p.part) return false;
+    if (p.part === true) return true;
+    try { return Boolean(p.part()); } catch (_) { return false; }
+  }
 
   /**
-   * Is something on the screen naming a failure of its own? Only a line on
-   * the page counts: a claim whose line is not (yet, or ever) there left
-   * the panel without "Nothing below is missing data" over a calendar
-   * whose lists all failed and said so nowhere below.
+   * Who says a failure now: 'panel', 'screen', or 'wait' (nobody yet: a
+   * line of the screen's may still come). `lines`: ownLines(), when the
+   * caller has read them already.
+   *
+   * The panel speaks for a failure only while no line of the screen's names
+   * it. A refused key, a spent day and a plan's 402 are the panel's
+   * whoever asked: no line has a word of .env or of when the day resets. A
+   * line that points at the panel leaves the failure to it. One that named
+   * it and is gone, with the failure not settled, set it aside: a tab that
+   * does not use the request (the heatmap's Crypto and Forex, for the US
+   * market hours), or a retry on its way. Its line comes back with the tab
+   * that uses it; the panel came up over the other tabs instead, and moved
+   * the page each time. A request no screen uses now (idle) is said by
+   * nobody, whatever it was.
    */
-  function partial() {
-    var all = claims();
-    for (var i = 0; i < all.length; i++) {
-      if (named(all[i][2])) return true;
+  function said(p, lines) {
+    if (!p) return 'panel';
+    if (idle(p)) return 'screen';
+    if (p.status === 401 || p.status === 402) return 'panel';
+    var on = onScreen(whatsOf(p), lines || ownLines());
+    if (on === 'names') { p.seen = Date.now(); return 'screen'; }
+    if (on !== 'points' && p.seen) return 'screen';
+    if (on !== 'points' && waiting(p)) return 'wait';
+    p.shown = true;
+    return 'panel';
+  }
+
+  /**
+   * Is something below partial, or naming a failure of its own? Then the
+   * panel does not say that nothing below is missing: any failure line of
+   * the screen's on the page -- one that says it, or one that points at the
+   * panel -- or a set that came in part (the options chain's first page,
+   * its later pages refused). "Nothing below is missing data; the requests
+   * were refused before any data was read" stood over a chain cut to its
+   * first page.
+   */
+  function partial(lines) {
+    if ((lines || ownLines()).length) return true;
+    // A request of a kind served on this page before it was asked: part of
+    // its set is below (the quotes of some positions, an earlier month's
+    // events). Not one served alongside it: the chain's later pages,
+    // answered while its first failed, put nothing on the page.
+    for (var k in problems) {
+      if (has(problems, k) && (partOf(problems[k]) || (has(servedKinds, k) && servedKinds[k] < problems[k].asked))) return true;
     }
+    for (var c in state) if (has(state, c) && state[c].allowed === false && partOf(state[c])) return true;
     return false;
   }
 
   /**
-   * The page is watched while anything is claimed: a line coming or going
+   * The page is watched while anything failed: a line coming or going
    * changes what the panel says, and nothing else would tell it. Told only
-   * when that changes (what is named, what still waits), on a short delay so
-   * a burst of drawing is one look.
+   * when that changes, on a short delay so a burst of drawing is one look.
    */
   var observer = null;
   var lookTimer = null;
   var lastLook = '';
-  // Everything a screen says it says: the claims, the panel's problems a
-  // line names too, the plan refusals it claims.
+  // Every failure kept: the request problems and the refused feeds.
   function claims() {
     var out = [];
-    for (var cap in said) {
-      if (Object.prototype.hasOwnProperty.call(said, cap)) out.push(['s', cap, said[cap]]);
-    }
-    for (var pc in problems) {
-      if (Object.prototype.hasOwnProperty.call(problems, pc) && problems[pc].owner) out.push(['p', pc, problems[pc]]);
-    }
-    for (var c in state) {
-      if (Object.prototype.hasOwnProperty.call(state, c) && state[c].allowed === false && state[c].owner) out.push(['d', c, state[c]]);
-    }
+    for (var k in problems) if (has(problems, k)) out.push(['p', k, problems[k]]);
+    for (var c in state) if (has(state, c) && state[c].allowed === false) out.push(['d', c, state[c]]);
     return out;
   }
   function sign() {
-    return claims().map(function (x) { return x[0] + x[1] + (named(x[2]) ? 'n' : waiting(x[2]) ? 'w' : '-'); }).join(' ');
+    var lines = ownLines();
+    return claims().map(function (x) { return x[0] + x[1] + said(x[2], lines).charAt(0); }).join(' ')
+      + (partial(lines) ? ' +' : '');
   }
   function look() {
     lookTimer = null;
@@ -540,16 +621,13 @@
     if (!all.length) { unwatch(); lastLook = ''; return; }
     var now = sign();
     if (now !== lastLook) notify(null);
-    // A wait, or a line gone while the screen asks again, ends by the
-    // clock, which no mutation reports: looked at once more when the first
-    // of them ends, and no more after; while anything is in flight, its end
-    // brings the look (settle). It looked every second and a quarter for as
-    // long as a line, once seen, stayed off the page.
+    // A wait ends by the clock, which no mutation reports: looked at once
+    // more when the first of them ends, and no more after; while anything
+    // is in flight, its end brings the look (settle).
     if (inFlight() > 0) return;
     var next = 0;
     all.forEach(function (x) {
-      var p = x[2];
-      var end = waiting(p) ? graceEnd(p.since) : (held(p) && !lineOnScreen(p.line)) ? graceEnd(p.seen) : 0;
+      var end = waiting(x[2]) ? graceEnd(x[2].since) : 0;
       if (end && (!next || end < next)) next = end;
     });
     if (next) lookSoon(Math.max(0, next - Date.now()) + 20);
@@ -568,7 +646,7 @@
     lookSoon();
     if (observer || typeof MutationObserver !== 'function' || typeof document === 'undefined' || !document.body) return;
     observer = new MutationObserver(function () { lookSoon(); });
-    observer.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['hidden', 'aria-hidden', 'inert'] });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['hidden', 'aria-hidden', 'inert', 'style', 'data-own-fail', 'data-see-panel'] });
   }
   function unwatch() {
     if (observer) { observer.disconnect(); observer = null; }
@@ -595,7 +673,7 @@
   }
 
   function known(capability) {
-    return Object.prototype.hasOwnProperty.call(state, capability);
+    return has(state, capability);
   }
 
   function get(capability) {
@@ -617,12 +695,15 @@
   // kept the line -- and when that was the silent one, the panel had nothing
   // to show while the view, asking explained(), said "See the panel above".
   // Half the heatmap's loads on a free key went like that.
+  //
+  // Not one a line of the screen's says ("… is not included in this plan"):
+  // a refusal the screen names is its own (said()).
   function denied() {
     var out = [];
     var seen = {};
+    var lines = ownLines();
     for (var key in state) {
-      if (Object.prototype.hasOwnProperty.call(state, key) && state[key].allowed === false && !silentCaps[key]
-        && !(state[key].owner && screensOwn(state[key]))) {
+      if (has(state, key) && state[key].allowed === false && !silentCaps[key] && said(state[key], lines) === 'panel') {
         var reason = state[key].reason || '';
         // Every feed behind a line is kept with it: a note that says what
         // still works has to know that only one feed was refused.
@@ -652,7 +733,7 @@
    *  line is only true when something else has, in fact, worked. */
   function anyAllowed() {
     for (var key in state) {
-      if (Object.prototype.hasOwnProperty.call(state, key) && state[key].allowed === true) return true;
+      if (has(state, key) && state[key].allowed === true) return true;
     }
     return false;
   }
@@ -661,25 +742,28 @@
    * The most pressing request problem, or null.
    *
    * One at a time, in the order a reader can act on them: a refused key first
-   * (fix .env), then a spent quota (wait, or upgrade), then upstream being
-   * down (wait). Whichever is shown, the views below are not "empty"; their
-   * requests never came back.
+   * (fix .env), then a spent day, then the per-minute limit (wait, or
+   * upgrade), then upstream being down (wait). Whichever is shown, the views
+   * below are not "empty"; their requests never came back.
    */
   //
-  // Not one the screen says itself (screensOwn): a claimed failure is the
-  // panel's once no line of the screen's says it. `partial`: something
-  // below names a failure of its own, so the panel does not say that
+  // Only one the panel says (said()): not while a line of the screen's names
+  // it, nor while one may still come. `partial`: something below names a
+  // failure of its own or came in part, so the panel does not say that
   // nothing below is missing.
+  var ORDER = [
+    function (p) { return p.kind === 'key'; },
+    function (p) { return p.kind === 'quota' && p.status !== 429; },
+    function (p) { return p.kind === 'quota' && p.status === 429; },
+    function (p) { return p.kind === 'upstream'; },
+  ];
   function problem() {
-    var order = ['key', 'quota', 'upstream'];
-    var maps = [problems, said];
-    for (var i = 0; i < order.length; i++) {
-      for (var m = 0; m < maps.length; m++) {
-        for (var cap in maps[m]) {
-          var p = maps[m][cap];
-          if (Object.prototype.hasOwnProperty.call(maps[m], cap) && p.kind === order[i] && !(maps[m] === said && screensOwn(p))) {
-            return { kind: p.kind, status: p.status, reason: p.reason, capability: cap, daily: Boolean(p.daily), seq: p.seq, partial: partial() };
-          }
+    var lines = ownLines();
+    for (var i = 0; i < ORDER.length; i++) {
+      for (var k in problems) {
+        var p = problems[k];
+        if (has(problems, k) && ORDER[i](p) && said(p, lines) === 'panel') {
+          return { kind: p.kind, status: p.status, reason: p.reason, capability: p.capability, daily: Boolean(p.daily), seq: p.seq, partial: partial(lines) };
         }
       }
     }
@@ -700,43 +784,33 @@
    * into them. A Marketplace product's own allowance is the exception. An
    * upstream failure is not: one feed can be down while the others answer.
    */
-  function keyWideProblem(cap, map) {
-    var p = (map || problems)[cap];
+  function aboutKey(p) {
     if (!p) return false;
-    // Pinned: a refusal its own feed keeps, which nothing on the screen says
-    // and only that feed answering settles (an exchange's hours, api.js).
-    if (p.pinned) return false;
     if (p.kind === 'key') return true;
     if (p.kind !== 'quota') return false;
-    return p.status === 429 || Boolean(p.daily) || !MARKETPLACE[cap];
+    return p.status === 429 || Boolean(p.daily) || !MARKETPLACE[p.capability];
   }
 
   /**
-   * A success settles the key-wide problems that came before it was asked.
+   * A success settles the per-minute limit met before it was asked.
    *
-   * Problems are kept per feed, and were only ever cleared by a success on
-   * the same feed. But a view's "Try again" does not ask for everything
-   * again: the calendar re-asks its events and not the exchanges' hours, the
-   * heatmap its quotes and not the index's member list. Those first refusals
-   * were never asked again, so "Daily request limit reached... Nothing below
-   * is missing data" stayed above data that had loaded.
-   *
-   * The limit is the key's, so any feed answering proves it is over -- as
-   * long as that request was sent after the refusal. Arriving after it is
-   * not enough: the last request the day allowed and the first it refused
+   * The minute is the key's, so any feed answering proves it is over -- as
+   * long as that request was sent after the 429. Arriving after it is not
+   * enough: the last request the minute allowed and the first it refused
    * leave together, and can come back in either order. A Marketplace feed's
-   * success proves nothing about the key's day, so it settles only itself.
+   * success proves nothing about the key's own counters, so it settles only
+   * itself. A refused key and a spent day are pinned (keep): only their own
+   * kind of request served settles them.
    */
   function clearKeyWide(capability, sent) {
     if (sent == null || MARKETPLACE[capability]) return;
-    [problems, said].forEach(function (map) {
-      for (var cap in map) {
-        if (Object.prototype.hasOwnProperty.call(map, cap) && keyWideProblem(cap, map) && map[cap].seq <= sent) {
-          delete map[cap];
-          notify(cap);
-        }
+    for (var k in problems) {
+      var p = problems[k];
+      if (has(problems, k) && !p.pinned && aboutKey(p) && p.seq <= sent) {
+        delete problems[k];
+        notify(p.capability);
       }
-    });
+    }
   }
 
   // The latest send mark of a request that was served: whatever was refused
@@ -754,7 +828,8 @@
     var still = [];
     waiters.forEach(function (w) { if (!w()) still.push(w); });
     waiters = still;
-    // A claim waits while anything is in flight; the clock starts now.
+    // A failure waits for its line while anything is in flight; the clock
+    // starts now.
     if (!inFlight()) {
       settledAt = Date.now();
       if (observer || lookTimer) lookSoon();
@@ -780,7 +855,7 @@
         if (served > after) answer = true;
         else {
           var busy = false;
-          for (var k in pending) { if (Object.prototype.hasOwnProperty.call(pending, k)) { busy = true; break; } }
+          for (var k in pending) { if (has(pending, k)) { busy = true; break; } }
           if (!busy) answer = false;
         }
         if (answer === null) return false;
@@ -803,7 +878,7 @@
   /** How many requests are in flight: for the tests that prove none is left. */
   function inFlight() {
     var n = 0;
-    for (var k in pending) { if (Object.prototype.hasOwnProperty.call(pending, k)) n += 1; }
+    for (var k in pending) { if (has(pending, k)) n += 1; }
     return n;
   }
 
@@ -817,39 +892,45 @@
   /**
    * The standing problem that is about the key, or null. While there is one,
    * another request would be refused the same way; shell/options.js asks
-   * before it sends four of them at once.
+   * before it sends four of them at once. A refused key or a spent day
+   * stands until a request sent after it is served: the panel says it
+   * longer, until its own kind of request is (keep).
    */
   //
   // The screen's own count too: a spent minute is the key's, whichever line
   // says so.
+  // Not a refusal the client only repeated from memory (kept): a key that
+  // answered since is not turned away by that.
   function keyWide() {
-    var maps = [problems, said];
-    for (var m = 0; m < maps.length; m++) {
-      for (var cap in maps[m]) {
-        if (Object.prototype.hasOwnProperty.call(maps[m], cap) && keyWideProblem(cap, maps[m])) {
-          return { kind: maps[m][cap].kind, status: maps[m][cap].status, capability: cap };
-        }
+    for (var k in problems) {
+      var p = problems[k];
+      if (has(problems, k) && aboutKey(p) && !p.kept && !(served > p.seq)) {
+        return { kind: p.kind, status: p.status, capability: p.capability };
       }
     }
     return null;
   }
 
   // Problems of requests that never got an answer (status 0) are about the
-  // network, not a feed: any answer, or the browser saying it is back online,
-  // settles them. Without the `online` listener "You are offline" stayed up
-  // after the connection returned until the next click.
-  function clearNetworkProblems() {
-    [problems, said].forEach(function (map) {
-      for (var cap in map) {
-        if (Object.prototype.hasOwnProperty.call(map, cap) && map[cap].kind === 'upstream' && !map[cap].status) {
-          delete map[cap];
-          notify(cap);
-        }
+  // network: the browser saying it is back online settles them -- "You are
+  // offline" stayed up after the connection returned until the next click.
+  // Not one a line of the screen's points at: the panel stays while that
+  // line says "See the panel above", and says it did not answer.
+  function backOnline() {
+    var lines = ownLines();
+    for (var k in problems) {
+      var p = problems[k];
+      if (has(problems, k) && p.kind === 'upstream' && !p.status && onScreen(whatsOf(p), lines) !== 'points') {
+        delete problems[k];
+        notify(p.capability);
       }
-    });
+    }
+    notify(null);
   }
   if (typeof window !== 'undefined' && window.addEventListener) {
-    window.addEventListener('online', clearNetworkProblems);
+    window.addEventListener('online', backOnline);
+    // A screen that starts or stops reading an exchange's hours (idle).
+    window.addEventListener('exchange-status:use', function () { if (claims().length) lookSoon(0); });
   }
 
   var silentCaps = {};
@@ -862,7 +943,7 @@
   function reset() {
     state = {};
     problems = {};
-    said = {};
+    servedKinds = {};
     listeners = [];
     seq = 0;
     served = 0;
@@ -883,7 +964,7 @@
     anyDenied: anyDenied,
     anyAllowed: anyAllowed,
     problem: problem,
-    partial: partial,
+    partial: function () { return partial(); },
     keyWide: keyWide,
     mark: mark,
     setSilent: setSilent,
@@ -896,10 +977,14 @@
     subscribe: subscribe,
     reset: reset,
     FEEDS: FEEDS,
+    // What a line's data-own-fail may name besides a kind of request
+    // (scripts/generate.js checks every mark against these).
+    NAMES: NAMES,
+    OTHER: OTHER,
     messageOf: messageOf,
     quote: quote,
     isLimitBody: isRateLimitBody,
-    // For the tests: what the page shows of the screen's own lines.
-    lineOnScreen: lineOnScreen,
+    // For the tests: the screen's failure lines on the page.
+    ownLines: ownLines,
   };
 })();

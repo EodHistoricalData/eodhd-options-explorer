@@ -288,7 +288,7 @@
     }
     // A bare code is its own listing -- the US one, or a pair's on CC or
     // FOREX; with none, the one exchange that lists that code ("M&M" is
-    // M&M.NSE, accepted 28.10 #3); with several, none of them: "MSF" took
+    // M&M.NSE); with several, none of them: "MSF" took
     // MSF.XETRA, the first row, and Sentiment added a card "MSF × no data".
     // Those are said instead (elsewhere).
     const exact = list.filter((r) => base(r) === q);
@@ -303,7 +303,7 @@
 
   // The rows of a bare code with no listing of its own: the one listing
   // when exactly one exchange has the code (several rows for it count as
-  // one), else null. "M&M" is M&M.NSE (accepted 28.10 #3).
+  // one), else null. "M&M" is M&M.NSE.
   function onlyListing(rows, symOf) {
     const symbols = {};
     (rows || []).forEach((r) => { const s = r && symOf(r); if (s) symbols[s] = symbols[s] || r; });
@@ -547,20 +547,35 @@
     return LIMIT_WORDS + (left ? ' Try again in ' + left + ' s.' : ' Try again in a minute.');
   }
   // `unreadable`: an answer came back that could not be read (RateLimitWait's
-  // own words for it); its status (200) is no reason.
+  // own words for it); its status (200) is no reason. A 402 is the day's
+  // limit, never "not included in this plan" (a 403's words).
   function failReason(status, unreadable) {
     const s = Number(status) || 0;
     if (unreadable) return 'EODHD sent a response the app could not read.';
     return s === 401 ? 'EODHD did not accept the API key (401).'
-      : (s === 402 || s === 403) ? 'it is not included in this plan (' + s + ').'
+      : s === 402 ? "EODHD's daily request limit was reached (402)."
+      : s === 403 ? 'it is not included in this plan (403).'
       : s >= 500 ? 'EODHD answered with an error (' + s + ').'
       : s ? 'EODHD answered ' + s + '.'
       : 'EODHD did not answer, or the connection dropped.';
   }
   const refusal = (s) => s === 401 || s === 402 || s === 403;
+  // A refused key or a spent day where a host's own panel says it (the open
+  // apps' frame): the words point to the panel and name neither. Read through RateLimitWait when it is there, else
+  // off Entitlement -- both optional in the apps this file goes into.
+  function underPanel(status, unreadable) {
+    const s = Number(status) || 0;
+    if (unreadable || (s !== 401 && s !== 402)) return false;
+    const R = typeof window !== 'undefined' ? window.RateLimitWait : null;
+    if (R && typeof R.hostPanel === 'function') return Boolean(R.hostPanel());
+    const E = typeof window !== 'undefined' ? window.Entitlement : null;
+    return Boolean(E && typeof E.problem === 'function');
+  }
   function failNote(raw, status, unreadable) {
     const s = Number(status) || 0;
-    return 'Could not check ' + strip(raw).trim().slice(0, 30) + ': ' + failReason(s, unreadable)
+    const what = 'Could not check ' + strip(raw).trim().slice(0, 30);
+    if (underPanel(s, unreadable)) return what + '. See the panel above.';
+    return what + ': ' + failReason(s, unreadable)
       + (refusal(s) && !unreadable ? '' : ' Try again.');
   }
   // What a picker says when its ticker search failed: never "no match" --
@@ -574,12 +589,16 @@
     const s = statusOf(err);
     return Boolean(Number(left) || s === 429 || (err && (err.rateLimited || err.name === 'EODHDRateLimitError')));
   }
-  function searchFailNote(err, left) {
+  // again: what asks once more on that screen, "Press Enter to try again."
+  // where Enter does: Sentiment's and Options' fields said "did not answer"
+  // for a 500.
+  function searchFailNote(err, left, again) {
     const s = statusOf(err);
     const w = Number(left) || 0;
     if (searchLimited(err, w)) return SEARCH_LIMIT_WORDS + (w ? ' Try again in ' + w + ' s.' : ' Try again in a minute.');
     const unreadable = !!(err && err.unreadable);
-    return 'The ticker search did not load: ' + failReason(s, unreadable) + (refusal(s) && !unreadable ? '' : ' Try again.');
+    if (underPanel(s, unreadable)) return 'The ticker search did not load. See the panel above.';
+    return 'The ticker search did not load: ' + failReason(s, unreadable) + (refusal(s) && !unreadable ? '' : ' ' + (again || 'Try again.'));
   }
 
   // Enter's answer for typed text, the same on every screen and in every
@@ -743,8 +762,7 @@
   // and stop() was not called first.
   // The time is counted by timers, never as the clock's distance to a
   // moment: the stands hold Date.now still, and a hang counted that way was
-  // never told -- "took too long", Add Position's type question (CI on r24,
-  // accepted 26.10 #12, 22.10 #5). A wait's length is read once, when it is
+  // never told -- "took too long", Add Position's type question. A wait's length is read once, when it is
   // seen: running at the start (2 s left made 9 s, not 11),
   // told by "api:rate-limited", or still running when the time is up (a
   // client that sends no event).

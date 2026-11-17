@@ -170,7 +170,7 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
     const RLW = window.RateLimitWait;
     setSearchNote(words);
     setSearchWait(RLW && RLW.RetryAfterWait
-      ? { words, query: q, redo: redo || null, failure: Object.assign(RLW.failure(err || { rateLimited: true }), { limited: true, status: 429 }) } : null);
+      ? { words, query: q, redo: redo || null, failure: Object.assign(RLW.failure(err || { rateLimited: true }, q), { limited: true, status: 429 }) } : null);
   };
   const openTypedRef = useRef(null);
   // The quote check a typed code is waiting for: a newer Enter or a pick
@@ -210,7 +210,8 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
       }
       // An answer for a query the user has already typed past is dropped.
       if (query !== latestQuery.current) return;
-      lastFound.current = { query, rows: found, failed };
+      // `thrown`: why it failed, for the line Enter gets.
+      lastFound.current = { query, rows: found, failed, thrown };
       setSearchResults(found);
       setSearchLoading(false);
       // The limit is said at once, with its wait (sayLimited); an Enter
@@ -529,8 +530,11 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
       // 429 wait nothing is sent; an Enter kept for a search that failed
       // again says so once, and does not ask by itself.
       if (left) { sayLimited(q, SC.SEARCH_LIMIT_WORDS ? SC.SEARCH_LIMIT_WORDS : SC.limitNote(left), null, () => openTypedRef.current(q)); return; }
+      // The reason, as the other ticker searches name it: "did not answer"
+      // stood for a 500 too.
       if (afterAnswer) {
-        setSearchNote('The ticker search did not answer. Press Enter to try again.');
+        setSearchNote(SC.searchFailNote ? SC.searchFailNote(last.thrown || {}, 0, 'Press Enter to try again.')
+          : 'The ticker search did not load: EODHD did not answer, or the connection dropped. Press Enter to try again.');
         return;
       }
       handleSearch(q);
@@ -959,7 +963,7 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
             )}
           </div>
           {dateFail && !loadingExpiry && (dateFail.kind === 'later' || dateFail.date === selectedExpiry) && (
-            <window.RateLimitWait.FailNote panel={'options-dates-' + dateFail.kind}
+            <window.RateLimitWait.FailNote panel={'options-dates-' + dateFail.kind} ownFail="options-chain"
               what={dateFail.kind === 'later' ? 'The later dates' : 'The contracts for ' + dateFail.date}
               failure={dateFail.failure} isDark={isDark} data-opt-date-fail={dateFail.kind}
               onRetry={() => {
@@ -1419,7 +1423,7 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
           </div>
           {/* Always there, so a reader hears the line when it appears; the
               marker too ("" while it says nothing), so a check can read it. */}
-          <div role="status" aria-live="polite" data-no-listing={searchNote ? 'true' : ''}
+          <div role="status" aria-live="polite" data-no-listing={searchNote ? 'true' : ''} data-own-fail="search"
             style={searchNote ? { marginTop: 6, fontSize: 12, lineHeight: 1.4, overflowWrap: 'anywhere', color: isDark ? C3.textMutedDark : C3.textMutedLight } : undefined}>
             {searchNote || ''}
           </div>
@@ -1427,7 +1431,7 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
           {searchWait && searchNote === searchWait.words && (
             <div data-search-wait="true" style={{ marginTop: 6 }}>
               {React.createElement(window.RateLimitWait.RetryAfterWait, {
-                failure: searchWait.failure, panel: 'search:opt-exp-suggestions', isDark,
+                failure: searchWait.failure, panel: 'search:opt-exp-suggestions', isDark, asked: searchQuery,
                 onRetry: () => {
                   const w = searchWaitRef.current;
                   setSearchWait(null);
@@ -1658,15 +1662,19 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
           optionsData.empty ? (
             <div style={{ textAlign: 'center', padding: '32px 16px' }}>
               <div style={{ fontSize: '40px', marginBottom: '12px' }}>{React.createElement(Icon, { name: 'mail', size: 40 })}</div>
-              <h3 data-opt-empty-heading="true" tabIndex={-1} style={{ fontWeight: '700', fontSize: '16px', marginBottom: '4px', outlineOffset: 2 }}>{optionsData.junk ? 'Not a ticker' : optionsData.index ? 'No index options' : optionsData.notUS ? 'US-listed underlyings only' : optionsData.failed ? 'Options did not load' : 'No Options Available'}</h3>
-              <p role={optionsData.failed ? 'status' : undefined} style={{ color: isDark ? C3.textMutedDark : C3.textMutedLight, fontSize: '13px' }}>
+              {/* A chain that did not load names it (data-own-fail; a line
+                  that points to the panel says so, data-see-panel). */}
+              <h3 data-opt-empty-heading="true" data-own-fail={optionsData.failed ? 'options-chain' : undefined} tabIndex={-1} style={{ fontWeight: '700', fontSize: '16px', marginBottom: '4px', outlineOffset: 2 }}>{optionsData.junk ? 'Not a ticker' : optionsData.index ? 'No index options' : optionsData.notUS ? 'US-listed underlyings only' : optionsData.failed ? 'Options did not load' : 'No Options Available'}</h3>
+              <p role={optionsData.failed ? 'status' : undefined} data-own-fail={optionsData.failed ? 'options-chain' : undefined}
+                data-see-panel={optionsData.failed ? window.RateLimitWait.seesPanel(optionsData.failWhat ? window.RateLimitWait.failText(optionsData.failWhat, optionsData.failed) : optionsData.message) : undefined}
+                style={{ color: isDark ? C3.textMutedDark : C3.textMutedLight, fontSize: '13px' }}>
                 {(optionsData.failWhat ? window.RateLimitWait.failText(optionsData.failWhat, optionsData.failed) : optionsData.message) || 'This symbol does not have options data.'}
               </p>
               {/* Without it, a refused or failed chain could only be asked
                   for again by picking the ticker anew. It counts the limit's
                   wait down and sends nothing inside it. */}
               {optionsData.retry && selectedSymbol && (
-                <window.RateLimitWait.RetryButton isDark={isDark} data-opt-retry="true" onClick={() => { retryFocusRef.current = true; selectTicker(selectedSymbol.symbol, selectedSymbol.name); }} style={{
+                <window.RateLimitWait.RetryButton isDark={isDark} data-opt-retry="true" onClick={() => { retryFocusRef.current = true; if (window.RateLimitWait.acted) window.RateLimitWait.acted('options-chain'); selectTicker(selectedSymbol.symbol, selectedSymbol.name); }} style={{
                   marginTop: '14px', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: 600,
                   border: '1px solid ' + (isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)'), background: 'transparent',
                   color: isDark ? C3.textDark : C3.textLightTheme,
@@ -1714,9 +1722,12 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
                   works on the loaded part says it here, above its content,
                   with the same line and Try again as those three, which draw
                   their own. */}
-              {optionsData.partFail && OWN_PART_LINE.indexOf(optionsTab) === -1 && !window.RateLimitWait.hostSaysKey(window.RateLimitWait.failure(optionsData.partFail)) && (
+              {/* Said whatever the open apps' panel says, with its own
+                  reason: at 401 or 402 on a later page it was hidden, and
+                  nine expiries of the first page read as the whole chain. */}
+              {optionsData.partFail && OWN_PART_LINE.indexOf(optionsTab) === -1 && (
                 <div data-opt-part-fail={optionsTab} data-own-fail="options-chain">
-                  <window.RateLimitWait.FailNote what="Part of the options chain" failure={window.RateLimitWait.failure(optionsData.partFail)}
+                  <window.RateLimitWait.FailNote what="Part of the options chain" partial ownFail="options-chain" failure={window.RateLimitWait.failure(optionsData.partFail)}
                     onRetry={chainRetry} onReload={chainReload} autoRetry={Boolean(chainReload)} isDark={isDark} panel={'options-' + optionsTab + '-part'}
                     extra="The expiries and contracts below are from the part that loaded."
                     style={{ fontSize: 12, marginBottom: 12 }} />

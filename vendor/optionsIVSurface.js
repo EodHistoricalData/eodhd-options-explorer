@@ -223,7 +223,7 @@ Analyze: 1) What does the term structure say (near-term IV above or below longer
     // and says so. By itself after the limit's wait only within the chain's
     // budget (onReload, null once spent); Try again always.
     optionsData && optionsData.partFail && window.RateLimitWait && React.createElement(window.RateLimitWait.FailNote, {
-      what: 'Part of the options chain', failure: window.RateLimitWait.failure(optionsData.partFail), onRetry, onReload, autoRetry: Boolean(onReload), isDark, panel: 'options-iv',
+      what: 'Part of the options chain', partial: true, ownFail: 'options-chain', failure: window.RateLimitWait.failure(optionsData.partFail), onRetry, onReload, autoRetry: Boolean(onReload), isDark, panel: 'options-iv',
       extra: 'The figures below are from the contracts that loaded.', style: { fontSize: 12, marginBottom: 12 },
     }),
     // Summary cards

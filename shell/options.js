@@ -192,10 +192,11 @@
    * ordering costs a second or two and buys nothing.
    */
   //
-  // Its failure is the screen's to say where the app says so (meta.json
-  // ownFailures, API._own): an expiry picked says it under the dates with a
-  // Try again, and one refetched for the chain is part of the chain's
-  // partFail.
+  // Its failure is said by the screen (`wait`: the panel waits for the
+  // line): an expiry picked says it under the dates with a Try again, and
+  // one refetched for the chain is part of the chain's partFail. The rest
+  // of the chain is on screen (`part`), so the panel never says that
+  // nothing below is missing.
   API.getOptionsExpiry = function (_k, symbol, date) {
     var underlying = usUnderlying(symbol);
     return API._request(['mp', 'unicornbay', 'options', 'contracts'], {
@@ -203,7 +204,7 @@
       'filter[exp_date_from]': date,
       'filter[exp_date_to]': date,
       'page[limit]': OPTIONS_PAGE_SIZE,
-    }, Object.assign({ why: true }, API._own('getOptionsExpiry'))).then(function (body) {
+    }, { why: true, wait: true, part: true }).then(function (body) {
       // Not served: the expiry with what failed (`notServed`), as the
       // terminal's client answers, so the view keeps what it has, says why
       // and asks again on Try again. A body that is no contract list
@@ -258,13 +259,14 @@
     // Not served -- no answer, a refusal, the limit, a body that is no
     // contract list -- is no dates with what failed (`failed`, not
     // enumerable), as the terminal's client answers: it read "No later
-    // dates". The view says it under the dates, with a Try again (`owned`).
+    // dates". The view says it under the dates, with a Try again (`wait`),
+    // under expiries already on screen (`part`).
     var notServed = function (why) {
       var none = [];
       Object.defineProperty(none, 'failed', { value: why || {}, enumerable: false });
       return none;
     };
-    return API._request(['mp', 'unicornbay', 'options', 'contracts'], params, Object.assign({ why: true }, API._own('getMoreOptionsExpirations'))).then(function (body) {
+    return API._request(['mp', 'unicornbay', 'options', 'contracts'], params, { why: true, wait: true, part: true }).then(function (body) {
       if (!body || body.notServed) return notServed(body && body.notServed);
       if (!Array.isArray(body.data)) return notServed({ status: 200, unreadable: true });
       var seen = [];
@@ -364,6 +366,11 @@
         if (window.Entitlement && window.Entitlement.get('options').allowed === false) refusedChains[underlying] = true;
       } else {
         Object.keys(refusedChains).forEach(function (k) { delete refusedChains[k]; });
+        // The client's memory of the refused pages too (shell/api.js,
+        // refusedAt), which answers them unsent: a chain served is the plan
+        // reaching the feed, and the next pick of a refused ticker, or Try
+        // again under a chain cut short, asks.
+        if (API._forgetRefused) API._forgetRefused(function (u) { return u.indexOf('options') !== -1 && u.indexOf('contracts') !== -1; });
         if (!empty && !partial) writeStoredChain(cacheKey, env);
       }
     }, function () { delete chainCache[cacheKey]; });
@@ -451,8 +458,19 @@
    * re-pick of a refused ticker sent nothing and read "No Options Available"
    * until a reload. The terminal's view calls this when it exists.
    */
+  // The client answers a refused address as it was, unsent, for the page's
+  // life (shell/api.js, refusedAt): a pick by hand is a person asking, and
+  // its chain is asked anew.
   API.forgetOptionsRefusal = function (symbol) {
-    delete refusedChains[usUnderlying(symbol)];
+    var underlying = usUnderlying(symbol);
+    delete refusedChains[underlying];
+    var mark = encodeURIComponent('filter[underlying_symbol]') + '=' + encodeURIComponent(underlying);
+    if (API._forgetRefused) {
+      API._forgetRefused(function (u) {
+        var at = u.indexOf(mark);
+        return u.indexOf('options') !== -1 && at !== -1 && /^(&|$)/.test(u.slice(at + mark.length));
+      });
+    }
   };
   API._optionsChainCache = chainCache;
 
@@ -494,9 +512,13 @@
         'page[offset]': page * OPTIONS_PAGE_SIZE,
       };
       // `why`: a page not served says why instead of answering null.
-      // `owned`: see laterOwned; the first page is the chain itself, and its
-      // failure the panel's.
-      var mine = page > 0 ? API._own('getOptionsChain', null, laterOwned) : { owned: false };
+      // `wait`: see laterOwned; the first page is the chain itself, and its
+      // failure the panel's at once. `part`: a later page refused after the
+      // first came with contracts leaves the chain partial below, whatever
+      // the panel says of the refusal -- it said "Nothing below is missing
+      // data; the requests were refused before any data was read" over
+      // nine expiries of the first page.
+      var mine = page > 0 ? { wait: laterOwned, part: laterOwned } : { wait: false };
       return API._request(segments, params, Object.assign({ why: true }, mine)).then(function (body) {
         var b = body || { notServed: {} };
         if (page === 0) firstPage = listed(b) && b.data.length ? 'contracts' : 'none';
