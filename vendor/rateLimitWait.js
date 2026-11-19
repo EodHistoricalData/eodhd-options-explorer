@@ -574,8 +574,12 @@ window.RateLimitWait = (function () {
         var left = due - Date.now();
         if (left > 0) { t = setTimeout(check, Math.min(1000, left + 20)); return; }
         off = true;
-        if (streaks[k]) streaks[k].reloadedAt = Date.now();
         var now = budgetOf(k);
+        // Another line of the same panel on the page fired the repeat
+        // already: one failure, one repeat. Overview's Allocation and Health
+        // name the same fundamentals and each sent its own (1, 21 and 46 s).
+        if (now.spent) return;
+        if (streaks[k]) streaks[k].reloadedAt = Date.now();
         now.spent = true;
         now.inFlight = true;
         now.firedAt = Date.now();

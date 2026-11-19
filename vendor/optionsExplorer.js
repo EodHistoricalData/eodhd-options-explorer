@@ -222,6 +222,15 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
         sayLimited(query, SC.SEARCH_LIMIT_WORDS, thrown);
         return;
       }
+      // EODHD's error, a dropped connection, an answer that could not be
+      // read: said at once, in the words Enter gets, as the Sentiment field
+      // says it -- the field stood empty while typing and the cause came
+      // only after Enter. Enter asks again (openTyped). A refusal of the key
+      // or the plan is said when Enter asks, as before.
+      const RLW = window.RateLimitWait;
+      if (failed && RLW && RLW.outage && RLW.outage(thrown || {}) && SC && SC.searchFailNote) {
+        setSearchNote(SC.searchFailNote(thrown || {}, 0, 'Press Enter to try again.'));
+      }
       // An Enter kept for this answer, which has no row: the typed code
       // decides (an index, a listing outside the US, not found). It waited
       // for a row and nothing happened.
@@ -336,6 +345,9 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
       }
     } catch (e) { /* a convenience, not a requirement */ }
     setSearchQuery('');
+    // The search still in flight was for the text this pick replaced: its
+    // answer, or its failure, is no longer about the (now empty) field.
+    latestQuery.current = '';
     // A refusal said under the field is about the entry this pick replaces.
     setSearchNote(null);
     setSearchResults([]);

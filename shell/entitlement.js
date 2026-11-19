@@ -240,9 +240,21 @@
         // answered, and the panel went after a second while the line under
         // the tabs still said "See the panel above".
         var sent = res ? res.sent : null;
-        if (!has(servedKinds, keyOf(capability, what))) servedKinds[keyOf(capability, what)] = seq;
-        var mine = problems[keyOf(capability, what)];
-        if (mine && (sent == null || mine.seq <= sent)) delete problems[keyOf(capability, what)];
+        var slot = keyOf(capability, what);
+        if (!has(servedKinds, slot)) servedKinds[slot] = seq;
+        [slot, slot + BESIDE].forEach(function (k) {
+          var mine = problems[k];
+          if (!mine || !(sent == null || mine.seq <= sent)) return;
+          // A refused key or a spent day that a line of the screen's has
+          // pointed at ("… did not load. See the panel above.") stays,
+          // served since, while a line points at it or the screen is still
+          // drawing one: the portfolio's economic data, served, took the
+          // panel off six lines about the refused quotes of the positions,
+          // and Macro's own line pointed at nothing. It goes once none does
+          // (said(), look()). One no line has pointed at goes as before.
+          if (mine.pinned && mine.pointed) { if (!mine.settled) mine.settled = Date.now(); return; }
+          settled(k);
+        });
         clearKeyWide(capability, sent);
         if (sent != null && sent > served) served = sent;
         notify(capability);
@@ -333,12 +345,45 @@
     if (res && res.kept) p.kept = true;
     // When it was asked (or, held or answered from memory, recorded).
     p.asked = res && res.sent != null ? res.sent : p.seq;
-    var k = keyOf(capability, p.what);
+    var slot = keyOf(capability, p.what);
+    p.slot = slot;
+    var k = slot;
+    var held = problems[slot];
+    // A refused key or a spent day holds its kind's place, and another
+    // failure of the same kind is kept beside it, not over it: the
+    // calendar's company names refused for TO (401) and failed for LSE
+    // (500) had the 500 take the panel, which the LSE line already said,
+    // and nobody said the 401 that TO's line pointed at. A refusal that
+    // comes after another failure of its kind takes the place, and moves
+    // that failure beside it.
+    if (held && held.pinned && !p.pinned) k = slot + BESIDE;
+    else if (held && !held.pinned && p.pinned) problems[slot + BESIDE] = held;
     // Said again from memory, and still standing: nothing new.
     if (p.kept && problems[k] && problems[k].status === p.status) return;
-    problems[k] = carry(problems[k], p, res);
+    var before = problems[k];
+    problems[k] = carry(before, p, res);
+    // A failure of a kind the screen's lines have named, after a success
+    // settled the last one: said where those lines are, as the last one
+    // was. The portfolio's price history hung on Risk, Correlation and
+    // Monte Carlo, and the panel came up over Backtest, What-If, Tax and
+    // Macro, which show nothing of it: a history served in between had
+    // settled what the lines had named, and the late failures of the tabs
+    // left behind came back as new ones with no line.
+    var gone = named[slot];
+    if (!before && gone && gone.kind === p.kind && gone.status === p.status) problems[k].seen = gone.seen;
     watch();
     notify(capability);
+  }
+  // Where a failure of a kind is kept beside the refusal holding its place.
+  var BESIDE = ' +';
+  // The failures of each kind a line of the screen's named, when a success
+  // settled them (keep()).
+  var named = {};
+  function settled(k) {
+    var p = problems[k];
+    if (!p) return;
+    if (p.seen) named[p.slot || k] = { kind: p.kind, status: p.status, seen: p.seen };
+    delete problems[k];
   }
 
   // What a record carries over from the one it replaces when the cause is
@@ -353,6 +398,7 @@
     p.since = same ? before.since : Date.now();
     p.seen = same ? before.seen : 0;
     p.shown = same ? Boolean(before.shown) : false;
+    p.pointed = same ? before.pointed || 0 : 0;
     if (same && before.wait === true) p.wait = true;
     if (same && before.part && !p.part) p.part = before.part;
     return p;
@@ -564,6 +610,11 @@
   function said(p, lines) {
     if (!p) return 'panel';
     if (idle(p)) return 'screen';
+    if (p.pinned) {
+      var at = onScreen(whatsOf(p), lines || (lines = ownLines()));
+      if (at === 'points') p.pointed = Date.now();
+      if (p.settled) return at === 'points' || !gone(p, lines) ? 'panel' : 'screen';
+    }
     if (p.status === 401 || p.status === 402) return 'panel';
     var on = onScreen(whatsOf(p), lines || ownLines());
     if (on === 'names') { p.seen = Date.now(); return 'screen'; }
@@ -571,6 +622,14 @@
     if (on !== 'points' && waiting(p)) return 'wait';
     p.shown = true;
     return 'panel';
+  }
+
+  // A refused key or a spent day served since (record): gone once no line
+  // of the screen's points at it and the screen has had its moment to draw
+  // one (the requests in flight settled, and the wait for a line after).
+  function gone(p, lines) {
+    if (onScreen(whatsOf(p), lines || ownLines()) === 'points') return false;
+    return inFlight() === 0 && Date.now() >= graceEnd(p.settled);
   }
 
   /**
@@ -589,7 +648,8 @@
     // events). Not one served alongside it: the chain's later pages,
     // answered while its first failed, put nothing on the page.
     for (var k in problems) {
-      if (has(problems, k) && (partOf(problems[k]) || (has(servedKinds, k) && servedKinds[k] < problems[k].asked))) return true;
+      var kind = has(problems, k) ? problems[k].slot || k : k;
+      if (has(problems, k) && (partOf(problems[k]) || (has(servedKinds, kind) && servedKinds[kind] < problems[k].asked))) return true;
     }
     for (var c in state) if (has(state, c) && state[c].allowed === false && partOf(state[c])) return true;
     return false;
@@ -617,6 +677,13 @@
   }
   function look() {
     lookTimer = null;
+    // A refused key or a spent day served since, that nothing points at now.
+    var lines = ownLines();
+    var dropped = false;
+    for (var k in problems) {
+      if (has(problems, k) && problems[k].settled && gone(problems[k], lines)) { settled(k); dropped = true; }
+    }
+    if (dropped) notify(null);
     var all = claims();
     if (!all.length) { unwatch(); lastLook = ''; return; }
     var now = sign();
@@ -627,10 +694,13 @@
     if (inFlight() > 0) return;
     var next = 0;
     all.forEach(function (x) {
-      var end = waiting(x[2]) ? graceEnd(x[2].since) : 0;
+      var end = waiting(x[2]) ? graceEnd(x[2].since) : x[2].settled ? graceEnd(x[2].settled) : 0;
       if (end && (!next || end < next)) next = end;
     });
-    if (next) lookSoon(Math.max(0, next - Date.now()) + 20);
+    // Only a time still ahead: a kept panel whose grace has run out stays
+    // while a line points at it, and the page changing brings the next look
+    // (the observer) -- not a look every 20 ms for as long as it stands.
+    if (next && next > Date.now()) lookSoon(next - Date.now() + 20);
   }
   // At most one look pending, at the earliest time asked for: a page that
   // draws without pause (a countdown, a chart) still gets looked at.
@@ -944,6 +1014,7 @@
     state = {};
     problems = {};
     servedKinds = {};
+    named = {};
     listeners = [];
     seq = 0;
     served = 0;

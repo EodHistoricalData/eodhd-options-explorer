@@ -330,6 +330,67 @@
    * symbol, another month -- is asked as any other.
    */
   var refusedAt = {};
+  /**
+   * What is kept stops the asks nobody made: a repeat after a wait, a view
+   * drawn again, another tab. A person pressing Try again asks again -- the
+   * key may have been put right in .env, the plan changed, the day turned
+   * -- and was answered from memory with nothing sent, the panel and the
+   * line left standing until the page was reloaded. A press lets each
+   * address refused before go out once more, while the press is recent
+   * (PRESS_MS: the work a press starts asks within it); a second ask of the
+   * same address for the same press, or any ask after it, is answered from
+   * memory as before. The press is heard on its way down (capture), so it
+   * is counted before the button's own handler asks. A press the button
+   * holds itself -- inside the per-minute wait (aria-disabled), or while
+   * its last ask is still out (aria-busy) -- sends nothing and counts for
+   * nothing.
+   */
+  var press = { n: 0, at: 0 };
+  var PRESS_MS = 5000;
+  var RETRY_WORDS = /^\s*(?:try again|retry)\b/i;
+  function pressed(e) {
+    var t = e && e.target;
+    var b = t && t.closest ? t.closest('button, [role="button"]') : null;
+    if (!b || b.disabled || b.getAttribute('aria-disabled') === 'true' || b.getAttribute('aria-busy') === 'true') return;
+    if (!RETRY_WORDS.test(b.textContent || '')) return;
+    press = { n: press.n + 1, at: Date.now() };
+  }
+  if (typeof document !== 'undefined' && document.addEventListener && !window.__eodhdRetryWatch) {
+    window.__eodhdRetryWatch = true;
+    document.addEventListener('click', pressed, true);
+  }
+  // The refusal kept for an address, or null when it is to be asked:
+  // never refused, or refused before the press this ask belongs to.
+  function keptAt(url) {
+    var kept = refusedAt[url];
+    if (!kept) return null;
+    if (press.n && kept.press !== press.n && Date.now() - press.at < PRESS_MS) {
+      // Counted for this press as it leaves, not when its answer comes: the
+      // same address asked again while that answer is still out (a view
+      // drawn again) is answered from memory, not sent a second time.
+      kept.press = press.n;
+      return null;
+    }
+    return kept;
+  }
+  // What an address answered, for the memory: a refusal is kept, stamped
+  // with the press it answered (if any) so the same press does not ask it a
+  // second time; any other answer -- the address asked again by a press
+  // and served, or failing some other way -- is no refusal to repeat.
+  function remember(url, status, body) {
+    if (refusal(status)) { refusedAt[url] = { status: status, body: body, press: press.n }; return; }
+    var was = refusedAt[url];
+    delete refusedAt[url];
+    // A refused key (401) or a spent day (402) is the key's, not the
+    // address's: one address it refused being served says it is lifted for
+    // the others too, so what the press started later (a second page, asked
+    // after the first has loaded) is not answered with the old refusal.
+    if (was && (was.status === 401 || was.status === 402)) {
+      for (var u in refusedAt) {
+        if (Object.prototype.hasOwnProperty.call(refusedAt, u) && (refusedAt[u].status === 401 || refusedAt[u].status === 402)) delete refusedAt[u];
+      }
+    }
+  }
   // The query of an address, as an object (for laterPage).
   function queryOf(path) {
     var out = {};
@@ -412,6 +473,8 @@
   }
 
   var inFlight = {};
+  // A request whose failure the screen says in a line of its own (asking()).
+  var FEED_LINE = { reportsFailure: true };
   var JOIN_WINDOW_MS = 3000;
   // How many screens have been left (EODHD_API.screen).
   var screenMark = 0;
@@ -510,7 +573,7 @@
     // Refused before for the key, the day or the plan: the same answer,
     // nothing sent (refusedAt), and recorded again as the refusal it is, so
     // what the screen is told and what the panel knows stay one.
-    var kept = refusedAt[url];
+    var kept = keptAt(url);
     if (kept) {
       var skipKept = soft && kept.status === 403 && E0 && E0.get && E0.get(capability).allowed === true;
       if (E0 && !skipKept) E0.fromResponse({ status: kept.status, body: kept.body, what: how.what, wait: how.wait, part: how.part, idle: how.idle, kept: true }, capability);
@@ -544,7 +607,7 @@
         noteLimit(res.status, res.headers && res.headers.get && res.headers.get('retry-after'));
         return res.text().then(function (body) {
           var E = window.Entitlement;
-          if (refusal(res.status)) refusedAt[url] = { status: res.status, body: body };
+          remember(url, res.status, body);
           var skip = soft && res.status === 403 && E && E.get && E.get(capability).allowed === true;
           if (E && !skip) {
             E.fromResponse({ status: res.status, body: body, sent: sent, what: how.what, wait: how.wait, part: how.part, idle: how.idle }, capability);
@@ -613,7 +676,7 @@
       // A module's own request refused before for the key, the day or the
       // plan is answered the same way, without leaving the browser
       // (refusedAt).
-      var kept = own && !shell ? refusedAt[path] : null;
+      var kept = own && !shell ? keptAt(path) : null;
       if (kept && typeof Response === 'function') {
         if (window.Entitlement) window.Entitlement.fromResponse({ status: kept.status, body: kept.body, what: how.what, wait: how.wait, kept: true }, capability);
         return Promise.resolve(new Response(kept.body, { status: kept.status, headers: { 'content-type': 'application/json' } }));
@@ -630,11 +693,12 @@
 
       var sent = window.Entitlement && window.Entitlement.mark ? window.Entitlement.mark() : null;
       var answered = function (status, body) {
-        if (refusal(status)) refusedAt[path] = { status: status, body: body };
+        remember(path, status, body);
         window.Entitlement.fromResponse({ status: status, body: body, sent: sent, what: how.what, wait: how.wait, part: how.part }, capability);
       };
       return promise.then(function (res) {
         noteLimit(res.status, res.headers && res.headers.get && res.headers.get('retry-after'));
+        if (res.status === 200) remember(path, 200, '');
         if (!window.Entitlement) return res;
         if (res.status === 200) {
           window.Entitlement.fromResponse({ status: 200, body: '', sent: sent, what: how.what }, capability);
@@ -681,7 +745,7 @@
 
     // Refused before: the same refusal, nothing sent (refusedAt), recorded
     // again (send()).
-    var kept = refusedAt[url];
+    var kept = keptAt(url);
     if (kept) {
       if (window.Entitlement) window.Entitlement.fromResponse({ status: kept.status, body: kept.body, what: how.what, wait: how.wait, kept: true }, capability);
       return Promise.reject(failedError(refusedText(kept.status, kept.body), kept));
@@ -703,7 +767,7 @@
       clear();
       noteLimit(res.status, res.headers && res.headers.get && res.headers.get('retry-after'));
       return res.text().then(function (body) {
-        if (refusal(res.status)) refusedAt[url] = { status: res.status, body: body };
+        remember(url, res.status, body);
         if (window.Entitlement) {
           window.Entitlement.fromResponse({ status: res.status, body: body, sent: sent, what: how.what, wait: how.wait, part: how.part }, capability);
         }
@@ -1288,11 +1352,16 @@
     // status, and a body that is not JSON as unreadable, so the calendar
     // says why a feed did not load -- an HTML page with 200 read "EODHD did
     // not answer".
-    getCalendarEarnings: function (_k, params, opts) { return opts && opts.throwErrors ? getOrStatus(['calendar', 'earnings'], params, 'The earnings calendar') : get(['calendar', 'earnings'], params); },
-    getCalendarDividends: function (_k, params, opts) { return opts && opts.throwErrors ? getOrStatus(['calendar', 'dividends'], params, 'The dividends calendar') : get(['calendar', 'dividends'], params); },
-    getCalendarIpos: function (_k, params, opts) { return opts && opts.throwErrors ? getOrStatus(['calendar', 'ipos'], params, 'The IPO calendar') : get(['calendar', 'ipos'], params); },
-    getCalendarSplits: function (_k, params, opts) { return opts && opts.throwErrors ? getOrStatus(['calendar', 'splits'], params, 'The splits calendar') : get(['calendar', 'splits'], params); },
-    getEconomicEvents: function (_k, params, opts) { return opts && opts.throwErrors ? getOrStatus(['economic-events'], params, 'The economic events') : get(['economic-events'], params); },
+    // The calendar's feeds: only the calendar asks them, and it names a
+    // feed's failure in a line of its own, drawn once its loads settle.
+    // The panel waits for that line (asking(): wait) rather than come up
+    // over "Loading events…" and go when the line comes, moving the
+    // page each way.
+    getCalendarEarnings: function (_k, params, opts) { return opts && opts.throwErrors ? getOrStatus(['calendar', 'earnings'], params, 'The earnings calendar', undefined, FEED_LINE) : get(['calendar', 'earnings'], params, FEED_LINE); },
+    getCalendarDividends: function (_k, params, opts) { return opts && opts.throwErrors ? getOrStatus(['calendar', 'dividends'], params, 'The dividends calendar', undefined, FEED_LINE) : get(['calendar', 'dividends'], params, FEED_LINE); },
+    getCalendarIpos: function (_k, params, opts) { return opts && opts.throwErrors ? getOrStatus(['calendar', 'ipos'], params, 'The IPO calendar', undefined, FEED_LINE) : get(['calendar', 'ipos'], params, FEED_LINE); },
+    getCalendarSplits: function (_k, params, opts) { return opts && opts.throwErrors ? getOrStatus(['calendar', 'splits'], params, 'The splits calendar', undefined, FEED_LINE) : get(['calendar', 'splits'], params, FEED_LINE); },
+    getEconomicEvents: function (_k, params, opts) { return opts && opts.throwErrors ? getOrStatus(['economic-events'], params, 'The economic events', undefined, FEED_LINE) : get(['economic-events'], params, FEED_LINE); },
     getDividendHistory: function (_k, symbol, from) { return get(['div', symbol], { from: from }); },
 
     screener: function (_k, params) { return get(['screener'], params); },

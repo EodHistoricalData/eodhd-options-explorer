@@ -13,7 +13,8 @@ window.APP_META = {
   ],
   "lineKinds": [
     "options-chain",
-    "quotes"
+    "quotes",
+    "search"
   ]
 };
 

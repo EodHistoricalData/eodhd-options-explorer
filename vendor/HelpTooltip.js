@@ -18,7 +18,10 @@
 // closed them only on mousedown. Opening one now tells the others to close,
 // and each popup has its own id.
 let helpTooltipSeq = 0;
-window.HelpTooltip = ({ title, text, isDark }) => {
+// `zIndex`: the popup's layer, for a view that sits above 9999 itself: the
+// Sentiment page is a fixed layer at 10000, and its "?" opened under it,
+// unread.
+window.HelpTooltip = ({ title, text, isDark, zIndex }) => {
   const [open, setOpen] = React.useState(false);
   const popupIdRef = React.useRef(null);
   if (popupIdRef.current === null) popupIdRef.current = 'help-tooltip-popup-' + (++helpTooltipSeq);
@@ -170,7 +173,7 @@ window.HelpTooltip = ({ title, text, isDark }) => {
       width: pos.width, boxSizing: 'border-box', padding: '14px 16px',
       background: bg, border: `1px solid ${border}`,
       borderRadius: 10, boxShadow: isDark ? '0 8px 24px rgba(0,0,0,0.4)' : '0 8px 24px rgba(0,0,0,0.12)',
-      zIndex: 9999, fontFamily: 'Inter, sans-serif',
+      zIndex: zIndex || 9999, fontFamily: 'Inter, sans-serif',
     },
   },
     React.createElement('div', {
