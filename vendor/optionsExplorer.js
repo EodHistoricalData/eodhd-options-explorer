@@ -176,7 +176,23 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
   // The quote check a typed code is waiting for: a newer Enter or a pick
   // ends it.
   const typedCheckRef = useRef(0);
+  // The field's turns (SymbolCode.searchTurns): every keystroke, pick,
+  // Escape and closed list starts a new one at once, and a request of an
+  // older turn is over -- its answer and its failure are dropped, its
+  // spinner ends with it, and its idle() is true. A chip picked before
+  // "NVD" answered left the spinner turning under the empty field; AA, AAP,
+  // then AA again took the first AA's late rows for the third's.
+  const turns = window.SymbolCode.useSearchTurns();
+  // The turn is over without a new search: a pick, Escape, the list closed.
+  const endSearch = () => {
+    turns.next();
+    if (searchTimeout.current) clearTimeout(searchTimeout.current);
+    setSearchLoading(false);
+    pendingEnter.current = false;
+    setSearchWait(null);
+  };
   const handleSearch = useCallback((query) => {
+    const t = turns.next();
     setSearchQuery(query);
     latestQuery.current = query;
     setActiveIdx(-1);
@@ -200,7 +216,11 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
       let failed = false;
       let thrown;
       try {
-        const results = await window.EODHD_API.searchStocks(apiKey, text, { throwErrors: true });
+        // turns.ask(): once its turn is over nobody uses this search -- its
+        // failure is said by no one (the open apps' panel said a superseded
+        // search's 429 over the chain picked meanwhile); while it is wanted,
+        // its failure is the line under the field's, not the panel's too.
+        const results = await window.EODHD_API.searchStocks(apiKey, text, turns.ask(t));
         // Filter to US stocks (options are mainly US)
         found = (results || []).filter(r => ['US', 'NYSE', 'NASDAQ'].includes(r.Exchange)).slice(0, 10);
       } catch (e) {
@@ -208,8 +228,9 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
         failed = true;
         thrown = e;
       }
-      // An answer for a query the user has already typed past is dropped.
-      if (query !== latestQuery.current) return;
+      // An answer of an older turn is dropped, its failure too; the change
+      // that ended the turn ended its spinner.
+      if (!turns.live(t)) return;
       // `thrown`: why it failed, for the line Enter gets.
       lastFound.current = { query, rows: found, failed, thrown };
       setSearchResults(found);
@@ -348,6 +369,10 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
     // The search still in flight was for the text this pick replaced: its
     // answer, or its failure, is no longer about the (now empty) field.
     latestQuery.current = '';
+    // And it is over: its spinner ends, one still waiting out the typing
+    // pause is not sent, an Enter kept for it is dropped, and the limit's
+    // line and its repeat after the wait go with the text they were for.
+    endSearch();
     // A refusal said under the field is about the entry this pick replaces.
     setSearchNote(null);
     setSearchResults([]);
@@ -414,10 +439,15 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
         // one; a chain answered with no contracts is not
         // this, it is "No Options Available" below.
         const f = window.RateLimitWait.failure(data && data.notServed ? data.notServed : null);
+        const ticker = symbol.split('.')[0];
+        // Worded when drawn (SymbolCode.late): what the host's panel says
+        // then, not when the chain failed -- the line kept pointing at a
+        // panel that had gone.
+        const chainNotServed = () => {
         // Pointed to only for a refusal or no answer: an error of EODHD's
         // (500) or an answer it could not read is named here, not "did not
         // answer for this key" under a panel reading HTTP 500.
-        const hostPanel = Boolean(window.Entitlement && window.Entitlement.explained && window.Entitlement.explained());
+        const hostPanel = Boolean(window.RateLimitWait.panelUp && window.RateLimitWait.panelUp());
         const explained = !f.limited && !f.unreadable && !(f.status >= 500) && hostPanel;
         // EODHD's error on the chain itself under the host's panel, which
         // names it: the view points to the panel as the other screens do,
@@ -430,11 +460,13 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
         // "Nothing below is missing data …" under "Options did not load",
         // the phrase twice and "for AAPL" gone.
         const yields = !f.unreadable && (f.limited || f.status >= 500) && hostPanel;
-        const chainFailed = window.RateLimitWait.failText('The options chain for ' + symbol.split('.')[0], f);
-        setOptionsData({ empty: true, retry: true, failed: f, message: explained
-          ? 'The options feed did not answer for this key — see the panel above. This is not a statement about ' + symbol.split('.')[0] + '.'
+        const chainFailed = window.RateLimitWait.failText('The options chain for ' + ticker, f);
+        return explained
+          ? 'The options feed did not answer for this key — see the panel above. This is not a statement about ' + ticker + '.'
           : yields ? chainFailed + ' See the panel above.'
-            : chainFailed });
+            : chainFailed;
+        };
+        setOptionsData({ empty: true, retry: true, failed: f, message: window.SymbolCode.late(chainNotServed) });
       } else {
         // Pages not served are worth a retry; a chain that came back whole
         // and empty is an answer.
@@ -544,8 +576,11 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
       if (left) { sayLimited(q, SC.SEARCH_LIMIT_WORDS ? SC.SEARCH_LIMIT_WORDS : SC.limitNote(left), null, () => openTypedRef.current(q)); return; }
       // The reason, as the other ticker searches name it: "did not answer"
       // stood for a 500 too.
+      // Worded when drawn (SymbolCode.late): a refused key points to the
+      // panel only while it is up.
       if (afterAnswer) {
-        setSearchNote(SC.searchFailNote ? SC.searchFailNote(last.thrown || {}, 0, 'Press Enter to try again.')
+        const thrown = last.thrown || {};
+        setSearchNote(SC.searchFailNote ? SC.late(() => SC.searchFailNote(thrown, 0, 'Press Enter to try again.'))
           : 'The ticker search did not load: EODHD did not answer, or the connection dropped. Press Enter to try again.');
         return;
       }
@@ -562,13 +597,17 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
       const sym = SC.of(q);
       // A pair (BTC-USD, EURUSD): the page names it without a request.
       if (sym && !/\.US$/.test(sym)) { openOrRefuse(sym); return; }
-      const api = SC.apiFor(window.EODHD_API, apiKey);
       const seq = ++typedCheckRef.current;
+      // The check is over once a pick, another Enter or any change of the
+      // field (its turn) replaced it: its failure is said nowhere.
+      const turn = turns.now();
+      const over = () => seq !== typedCheckRef.current || !turns.live(turn);
+      const api = SC.apiFor(window.EODHD_API, apiKey, { idle: over });
       Promise.resolve(SC.listed(sym, api)).then((ok) => {
-        if (seq !== typedCheckRef.current || latestQuery.current !== q) return;
+        if (over()) return;
         if (ok === true) selectTicker(sym, '');
         else if (ok === 'limited') sayLimited(q, SC.LIMIT_WORDS || SC.limitNote(api.limited()), null, () => openTypedRef.current(q));
-        else if (ok && ok.failed !== undefined) setSearchNote(SC.failNote(q, ok.failed, ok.unreadable));
+        else if (ok && ok.failed !== undefined) setSearchNote(SC.late(() => SC.failNote(q, ok.failed, ok.unreadable)));
         else setSearchNote(notFound());
       });
       return;
@@ -629,6 +668,11 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
     } else if (e.key === 'Escape' && n) {
       setSearchResults([]);
       setActiveIdx(-1);
+      endSearch();
+    } else if (e.key === 'Escape' && searchLoading) {
+      // Escape while the search is out: it is over, and its late answer
+      // opens no list.
+      endSearch();
     } else if (e.key === 'Escape' && searchNote) {
       // A refused entry is put away: the field and its sentence are cleared,
       // and what is on screen was never touched.
@@ -1437,7 +1481,7 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
               marker too ("" while it says nothing), so a check can read it. */}
           <div role="status" aria-live="polite" data-no-listing={searchNote ? 'true' : ''} data-own-fail="search"
             style={searchNote ? { marginTop: 6, fontSize: 12, lineHeight: 1.4, overflowWrap: 'anywhere', color: isDark ? C3.textMutedDark : C3.textMutedLight } : undefined}>
-            {searchNote || ''}
+            {window.SymbolCode.words(searchNote) || ''}
           </div>
           {/* Outside the region: its count changes every second. */}
           {searchWait && searchNote === searchWait.words && (
@@ -1465,7 +1509,7 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
             id: 'opt-exp-suggestions',
             role: 'listbox',
             open: searchResults.length > 0,
-            onClose: () => setSearchResults([]),
+            onClose: () => { setSearchResults([]); endSearch(); },
             isDark,
             maxHeight: 320,
           },
@@ -1678,9 +1722,9 @@ window.OptionsExplorerView = ({ apiKey, theme, onSelectAsset, onClose, activeTab
                   that points to the panel says so, data-see-panel). */}
               <h3 data-opt-empty-heading="true" data-own-fail={optionsData.failed ? 'options-chain' : undefined} tabIndex={-1} style={{ fontWeight: '700', fontSize: '16px', marginBottom: '4px', outlineOffset: 2 }}>{optionsData.junk ? 'Not a ticker' : optionsData.index ? 'No index options' : optionsData.notUS ? 'US-listed underlyings only' : optionsData.failed ? 'Options did not load' : 'No Options Available'}</h3>
               <p role={optionsData.failed ? 'status' : undefined} data-own-fail={optionsData.failed ? 'options-chain' : undefined}
-                data-see-panel={optionsData.failed ? window.RateLimitWait.seesPanel(optionsData.failWhat ? window.RateLimitWait.failText(optionsData.failWhat, optionsData.failed) : optionsData.message) : undefined}
+                data-see-panel={optionsData.failed ? window.RateLimitWait.seesPanel(optionsData.failWhat ? window.RateLimitWait.failText(optionsData.failWhat, optionsData.failed) : window.SymbolCode.words(optionsData.message)) : undefined}
                 style={{ color: isDark ? C3.textMutedDark : C3.textMutedLight, fontSize: '13px' }}>
-                {(optionsData.failWhat ? window.RateLimitWait.failText(optionsData.failWhat, optionsData.failed) : optionsData.message) || 'This symbol does not have options data.'}
+                {(optionsData.failWhat ? window.RateLimitWait.failText(optionsData.failWhat, optionsData.failed) : window.SymbolCode.words(optionsData.message)) || 'This symbol does not have options data.'}
               </p>
               {/* Without it, a refused or failed chain could only be asked
                   for again by picking the ticker anew. It counts the limit's

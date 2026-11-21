@@ -173,6 +173,20 @@
   }
 
   /**
+   * Parameters a module addresses to the terminal's own server, which reads
+   * them and drops them before EODHD: `local_filters`, the fields the
+   * screener applies in the page, and `screen_filters`. Here every request
+   * goes to EODHD through the local proxy, which passes on what it is given,
+   * so they never go on an address.
+   */
+  var OWN_PARAMS = ['local_filters', 'screen_filters'];
+
+  // Whether params[k] goes on the address: set, and not one of the above.
+  function onAddress(params, k) {
+    return Object.prototype.hasOwnProperty.call(params, k) && params[k] != null && OWN_PARAMS.indexOf(k) === -1;
+  }
+
+  /**
    * One request, through the proxy.
    *
    * The path arrives as segments rather than a string, so a symbol containing
@@ -344,8 +358,14 @@
    * holds itself -- inside the per-minute wait (aria-disabled), or while
    * its last ask is still out (aria-busy) -- sends nothing and counts for
    * nothing.
+   *
+   * A press is its own line's: it lets out only the refusals of the kinds
+   * of request that line names (data-own-fail). Any Try again let every
+   * address refused before go out once while the press was recent -- a
+   * press under the news let the portfolio's refused quotes go too, if
+   * anything asked for them in those five seconds.
    */
-  var press = { n: 0, at: 0 };
+  var press = { n: 0, at: 0, kinds: [] };
   var PRESS_MS = 5000;
   var RETRY_WORDS = /^\s*(?:try again|retry)\b/i;
   function pressed(e) {
@@ -353,18 +373,48 @@
     var b = t && t.closest ? t.closest('button, [role="button"]') : null;
     if (!b || b.disabled || b.getAttribute('aria-disabled') === 'true' || b.getAttribute('aria-busy') === 'true') return;
     if (!RETRY_WORDS.test(b.textContent || '')) return;
-    press = { n: press.n + 1, at: Date.now() };
+    press = { n: press.n + 1, at: Date.now(), kinds: namedNear(b) };
   }
   if (typeof document !== 'undefined' && document.addEventListener && !window.__eodhdRetryWatch) {
     window.__eodhdRetryWatch = true;
     document.addEventListener('click', pressed, true);
   }
+  /**
+   * The kinds of request the failure lines nearest a button name (whatOf's
+   * words, a line's data-own-fail read as Entitlement reads it): the line
+   * the button is in, else the lines of the smallest block around it that
+   * has any -- a line and its Try again side by side, a feed's row, the
+   * calendar's one Try again under every feed's line -- up to the view.
+   * None when nothing there names a failure: the view's own crash panel
+   * mounts the view again, and that asks no refused address anew.
+   */
+  function namedNear(button) {
+    var E = window.Entitlement;
+    var NAMES = (E && E.NAMES) || {};
+    var kinds = [];
+    var add = function (value) {
+      String(value || '').split(/[\s,]+/).forEach(function (v) {
+        if (!v) return;
+        [].concat(Object.prototype.hasOwnProperty.call(NAMES, v) ? NAMES[v] : v).forEach(function (w) {
+          if (kinds.indexOf(w) === -1) kinds.push(w);
+        });
+      });
+    };
+    for (var a = button; a && a.nodeType === 1; a = a.parentElement) {
+      if (a.hasAttribute('data-own-fail')) add(a.getAttribute('data-own-fail'));
+      var inner = a.querySelectorAll ? a.querySelectorAll('[data-own-fail]') : [];
+      for (var i = 0; i < inner.length; i++) add(inner[i].getAttribute('data-own-fail'));
+      if (kinds.length || a.hasAttribute('data-app-view')) break;
+    }
+    return kinds;
+  }
   // The refusal kept for an address, or null when it is to be asked:
-  // never refused, or refused before the press this ask belongs to.
-  function keptAt(url) {
+  // never refused, or refused before the press this ask belongs to and of a
+  // kind (`what`, whatOf's) that press's line names.
+  function keptAt(url, what) {
     var kept = refusedAt[url];
     if (!kept) return null;
-    if (press.n && kept.press !== press.n && Date.now() - press.at < PRESS_MS) {
+    if (press.n && kept.press !== press.n && Date.now() - press.at < PRESS_MS && press.kinds.indexOf(what) !== -1) {
       // Counted for this press as it leaves, not when its answer comes: the
       // same address asked again while that answer is still out (a view
       // drawn again) is answered from memory, not sent a second time.
@@ -375,21 +425,41 @@
   }
   // What an address answered, for the memory: a refusal is kept, stamped
   // with the press it answered (if any) so the same press does not ask it a
-  // second time; any other answer -- the address asked again by a press
-  // and served, or failing some other way -- is no refusal to repeat.
-  function remember(url, status, body) {
-    if (refusal(status)) { refusedAt[url] = { status: status, body: body, press: press.n }; return; }
+  // second time, with its feed (`capability`) and kind (`what`, whatOf's);
+  // any other answer -- the address asked again by a press and served, or
+  // failing some other way -- is no refusal to repeat.
+  function remember(url, status, body, capability, what) {
+    if (refusal(status)) {
+      refusedAt[url] = { status: status, body: body, press: press.n, capability: capability || '', what: what || '' };
+      return;
+    }
     var was = refusedAt[url];
     delete refusedAt[url];
-    // A refused key (401) or a spent day (402) is the key's, not the
-    // address's: one address it refused being served says it is lifted for
-    // the others too, so what the press started later (a second page, asked
-    // after the first has loaded) is not answered with the old refusal.
-    if (was && (was.status === 401 || was.status === 402)) {
-      for (var u in refusedAt) {
-        if (Object.prototype.hasOwnProperty.call(refusedAt, u) && (refusedAt[u].status === 401 || refusedAt[u].status === 402)) delete refusedAt[u];
-      }
+    // An address it refused, now answered with data, lifts what had the
+    // same one cause, so what the press started later (a second page, asked
+    // after the first has loaded) is not answered with the old refusal: a
+    // refused key (401) is the key's, every address it refused; a spent day
+    // or a plan's 402 is its feed's, the addresses of that feed only. An
+    // answer that is no data -- a 500, nothing at all -- says nothing of
+    // either and lifts nothing else: an earnings-only Try again answered 500
+    // let the refused dividends out as well.
+    if (!was || !(status >= 200 && status < 300)) return;
+    for (var u in refusedAt) {
+      if (!Object.prototype.hasOwnProperty.call(refusedAt, u)) continue;
+      var r = refusedAt[u];
+      if ((was.status === 401 && r.status === 401) || (was.status === 402 && r.status === 402 && r.capability === was.capability)) delete refusedAt[u];
     }
+  }
+  // Whether an address of this feed and kind is still refused with this
+  // status, answered from memory as it is asked (Entitlement's bringBack:
+  // a refusal set aside comes back only while it still stands).
+  function refusalStands(capability, what, status) {
+    for (var u in refusedAt) {
+      if (!Object.prototype.hasOwnProperty.call(refusedAt, u)) continue;
+      var r = refusedAt[u];
+      if (r.status === status && r.capability === capability && r.what === what) return true;
+    }
+    return false;
   }
   // The query of an address, as an object (for laterPage).
   function queryOf(path) {
@@ -437,7 +507,7 @@
     var merged = params || {};
     merged.fmt = merged.fmt || 'json';
     for (var k in merged) {
-      if (Object.prototype.hasOwnProperty.call(merged, k) && merged[k] != null) {
+      if (onAddress(merged, k)) {
         query.push(encodeURIComponent(k) + '=' + encodeURIComponent(merged[k]));
       }
     }
@@ -573,7 +643,7 @@
     // Refused before for the key, the day or the plan: the same answer,
     // nothing sent (refusedAt), and recorded again as the refusal it is, so
     // what the screen is told and what the panel knows stay one.
-    var kept = keptAt(url);
+    var kept = keptAt(url, how.what);
     if (kept) {
       var skipKept = soft && kept.status === 403 && E0 && E0.get && E0.get(capability).allowed === true;
       if (E0 && !skipKept) E0.fromResponse({ status: kept.status, body: kept.body, what: how.what, wait: how.wait, part: how.part, idle: how.idle, kept: true }, capability);
@@ -607,7 +677,7 @@
         noteLimit(res.status, res.headers && res.headers.get && res.headers.get('retry-after'));
         return res.text().then(function (body) {
           var E = window.Entitlement;
-          remember(url, res.status, body);
+          remember(url, res.status, body, capability, how.what);
           var skip = soft && res.status === 403 && E && E.get && E.get(capability).allowed === true;
           if (E && !skip) {
             E.fromResponse({ status: res.status, body: body, sent: sent, what: how.what, wait: how.wait, part: how.part, idle: how.idle }, capability);
@@ -676,7 +746,7 @@
       // A module's own request refused before for the key, the day or the
       // plan is answered the same way, without leaving the browser
       // (refusedAt).
-      var kept = own && !shell ? keptAt(path) : null;
+      var kept = own && !shell ? keptAt(path, how.what) : null;
       if (kept && typeof Response === 'function') {
         if (window.Entitlement) window.Entitlement.fromResponse({ status: kept.status, body: kept.body, what: how.what, wait: how.wait, kept: true }, capability);
         return Promise.resolve(new Response(kept.body, { status: kept.status, headers: { 'content-type': 'application/json' } }));
@@ -693,12 +763,12 @@
 
       var sent = window.Entitlement && window.Entitlement.mark ? window.Entitlement.mark() : null;
       var answered = function (status, body) {
-        remember(path, status, body);
+        remember(path, status, body, capability, how.what);
         window.Entitlement.fromResponse({ status: status, body: body, sent: sent, what: how.what, wait: how.wait, part: how.part }, capability);
       };
       return promise.then(function (res) {
         noteLimit(res.status, res.headers && res.headers.get && res.headers.get('retry-after'));
-        if (res.status === 200) remember(path, 200, '');
+        if (res.status === 200) remember(path, 200, '', capability, how.what);
         if (!window.Entitlement) return res;
         if (res.status === 200) {
           window.Entitlement.fromResponse({ status: 200, body: '', sent: sent, what: how.what }, capability);
@@ -737,7 +807,7 @@
     var merged = params || {};
     merged.fmt = merged.fmt || 'json';
     for (var k in merged) {
-      if (Object.prototype.hasOwnProperty.call(merged, k) && merged[k] != null) {
+      if (onAddress(merged, k)) {
         query.push(encodeURIComponent(k) + '=' + encodeURIComponent(merged[k]));
       }
     }
@@ -745,7 +815,7 @@
 
     // Refused before: the same refusal, nothing sent (refusedAt), recorded
     // again (send()).
-    var kept = keptAt(url);
+    var kept = keptAt(url, how.what);
     if (kept) {
       if (window.Entitlement) window.Entitlement.fromResponse({ status: kept.status, body: kept.body, what: how.what, wait: how.wait, kept: true }, capability);
       return Promise.reject(failedError(refusedText(kept.status, kept.body), kept));
@@ -767,7 +837,7 @@
       clear();
       noteLimit(res.status, res.headers && res.headers.get && res.headers.get('retry-after'));
       return res.text().then(function (body) {
-        remember(url, res.status, body);
+        remember(url, res.status, body, capability, how.what);
         if (window.Entitlement) {
           window.Entitlement.fromResponse({ status: res.status, body: body, sent: sent, what: how.what, wait: how.wait, part: how.part }, capability);
         }
@@ -793,6 +863,32 @@
     var shaped = function (d) { return (d && typeof d === 'object') ? d : null; };
     if (opts && opts.throwErrors) return getOrStatus(['v1.1', 'fundamentals', symbol], { filter: filter }, what, undefined, opts).then(shaped);
     return get(['v1.1', 'fundamentals', symbol], { filter: filter }).then(shaped).catch(function () { return null; });
+  }
+
+  /**
+   * One currency pair's quote: { rate, prev }, each null when not known.
+   * `rate` is the quote's close, as getForexRate has always read it; `prev`
+   * its previousClose, only beside a close that is a number (else the rate
+   * itself may be that close, and no earlier one is known) -- the
+   * terminal's rule. The pair is asked as written and nothing more: the
+   * portfolio asks the other direction and the cross through USD itself
+   * (Calc.fxRateDay), so a missing pair costs here what it cost before.
+   * `fails` (optional array): what a failed request was is pushed on it.
+   */
+  function forexDay(from, to, fails) {
+    var collect = Array.isArray(fails);
+    var segments = ['real-time', from + to + '.FOREX'];
+    var asked = collect ? getOrStatus(segments, null, 'The rate', 'quote') : get(segments);
+    return asked
+      .then(function (d) {
+        var rate = (d && d.close) || null;
+        return { rate: rate, prev: rate != null && positive(d.close) != null ? positive(d.previousClose) : null };
+      })
+      .catch(function (e) { if (collect) fails.push(e || {}); return { rate: null, prev: null }; });
+  }
+  function positive(v) {
+    var n = parseFloat(v);
+    return Number.isFinite(n) && n > 0 ? n : null;
   }
 
   // Upstream's sentence for a failure, or the status when upstream sent a
@@ -866,6 +962,9 @@
     _forgetRefused: function (test) {
       Object.keys(refusedAt).forEach(function (u) { if (test(u)) delete refusedAt[u]; });
     },
+    // Whether a refusal of this feed, kind and status still stands
+    // (shell/entitlement.js, bringBack).
+    _refusalStands: refusalStands,
 
     // The terminal's transport for its own backend, which the screener calls
     // by name: `_proxyFetch('screener', params)`. Here it is the local proxy,
@@ -969,6 +1068,12 @@
     // with get()'s null for both it said "No ticker matches" next to the
     // shell's own "EODHD did not answer". A query that names nothing is
     // still no match, asked of nobody.
+    // opts.idle (asking()): a function that says nobody waits for this
+    // search any more -- typed past, or a ticker picked while it was out.
+    // Its failure is then nobody's: the field drops the answer and says
+    // nothing, and the panel does not take it either. Without it, the
+    // options field's 429 came up as "Too many requests at once" over the
+    // chain picked meanwhile, and stayed.
     searchStocks: function (_k, query, opts) {
       // The search for a full code is the check of that code: the answer is
       // noted, so Enter after it is not a second metered search for the same
@@ -1314,11 +1419,17 @@
     // A caller that collects them says it: "the GBX/USD rate did not load".
     getForexRate: function (_k, from, to, _noCross, fails) {
       if (from === to) return Promise.resolve(1);
-      var collect = Array.isArray(fails);
-      var asked = collect ? getOrStatus(['real-time', from + to + '.FOREX'], null, 'The rate', 'quote') : get(['real-time', from + to + '.FOREX']);
-      return asked
-        .then(function (d) { return (d && d.close) || null; })
-        .catch(function (e) { if (collect) fails.push(e || {}); return null; });
+      return forexDay(from, to, fails).then(function (d) { return d.rate; });
+    },
+    // { rate, prev }: the rate now, as getForexRate gives it, and the rate at
+    // the previous close, from the same quote -- the terminal's signature.
+    // The portfolio's day in another currency is today's value at today's
+    // rate less yesterday's close at yesterday's rate (Calc.fxRateDay);
+    // without this method every such position's Day P&L read "no EUR/USD
+    // rate at the previous close". `fails` as for getForexRate.
+    getForexRateDay: function (_k, from, to, _noCross, fails) {
+      if (from === to) return Promise.resolve({ rate: 1, prev: 1 });
+      return forexDay(from, to, fails);
     },
     getForexRates: function (k, base, currencies) {
       var self = this;

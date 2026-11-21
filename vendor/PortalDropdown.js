@@ -160,7 +160,9 @@
   //   what it threw). At the limit, with `search`, the line names the limit
   //   and a Try again under it counts the wait down; the search is asked
   //   again by itself once the wait is over, nothing is sent inside it.
-  const useComboboxKeys = ({ items, open, onPick, listId, query, codeOf, isDark, answered, resolve, search }) => {
+  // onDismiss: Escape in the field -- the screen ends its search's turn
+  // (SymbolCode.searchTurns), so a late answer opens no list.
+  const useComboboxKeys = ({ items, open, onPick, listId, query, codeOf, isDark, answered, resolve, search, onDismiss }) => {
     // The row the arrow keys are on: the only row Enter takes. The mouse
     // only paints (hover). onMouseEnter made the row under a resting pointer
     // the Enter target: "FOO.L" + Enter with the list opening under the
@@ -201,6 +203,11 @@
     const [away, setAway] = React.useState(null);
     const RLW = window.RateLimitWait;
     const SC = window.SymbolCode;
+    // A line kept as how to say it (SymbolCode.late) is worded when drawn,
+    // and drawn again when the host's panel comes or goes: a refused key's
+    // line points to the panel only while it is up.
+    ((RLW && RLW.useHostPanel) || (() => {}))();
+    const wordsOf = (n) => (SC && SC.words ? SC.words(n) : n);
     // The search asked again by that Try again: { query, token }. It ends
     // when that search does -- its failure said (kb.say) or its answer told
     // (kb.searched) -- not when a render shows it out: an answer that came
@@ -260,7 +267,10 @@
     const runResolveRef = React.useRef(null);
     const runResolve = (q, rows) => {
       const seq = ++resolveSeq.current;
-      Promise.resolve().then(() => resolve(q, rows)).then((res) => {
+      // Over once a pick, Escape or new typing replaced it: its requests
+      // are said by nobody (SymbolCode.forPicker, apiFor's idle).
+      const idle = () => seq !== resolveSeq.current || queryRef.current !== q;
+      Promise.resolve().then(() => resolve(q, rows, { idle })).then((res) => {
         if (seq !== resolveSeq.current || queryRef.current !== q) return;
         if (res && res.item) { resolveSeq.current++; onPick(res.item); }
         else if (res && res.note && res.limited && canCount()) tell(SC.LIMIT_WORDS, limitFailure(), () => runResolveRef.current(q, rows));
@@ -357,6 +367,9 @@
     }).filter(Boolean) : [];
     const onKeyDown = (e) => {
       const typed = String(query || '').trim();
+      // Escape: the search still out is over (the list, if open, closes as a
+      // layer too); an Enter left out for it goes with it.
+      if (e.key === 'Escape') { cancel(); if (typeof onDismiss === 'function') onDismiss(); return; }
       // One letter: nothing searches for it, and F, V, T, C are US codes.
       // The screen's resolve() checks it by its quote; Enter did nothing at
       // all.
@@ -394,10 +407,12 @@
         style: { marginRight: 6, marginTop: 4, padding: '2px 10px', minHeight: 28, borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600,
           background: 'none', border: '1px solid ' + (isDark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.25)'), color: ink },
       }, o.symbol)))
-      : (noListing || '');
+      : (wordsOf(noListing) || '');
     const noteEl = React.createElement(React.Fragment, null,
       React.createElement('div', {
-        role: 'status', 'aria-live': 'polite', 'data-no-listing': noListing ? 'true' : undefined,
+        // The search's failure is this line's (the open apps' panel does not
+        // say it too: the request claims it, SymbolCode.searchTurns().ask).
+        role: 'status', 'aria-live': 'polite', 'data-no-listing': noListing ? 'true' : undefined, 'data-own-fail': 'search',
         style: noListing ? { marginTop: 6, fontSize: 12, lineHeight: 1.4, overflowWrap: 'anywhere', color: isDark ? (C3.textMutedDark || 'rgba(255,255,255,0.7)') : (C3.textMutedLight || 'rgba(0,0,0,0.7)') } : undefined,
       }, lineText),
       limited && noListing && canWait(limited.redo) ? React.createElement('div', { 'data-search-wait': 'true', style: { marginTop: 6 } },
@@ -408,7 +423,7 @@
     return {
       active: painted,
       target: active,
-      note: noListing || null,
+      note: wordsOf(noListing) || null,
       noteEl,
       sayNone,
       // A screen's own Enter: the same answer as the hook's (resolve), or

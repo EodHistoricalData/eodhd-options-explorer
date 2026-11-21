@@ -12,6 +12,7 @@
 //   SymbolCode.read(raw, { held, rows })
 //     -> { symbol: 'BRK-B.US' } or { symbol: null, reason: 'empty' | 'junk' }
 //   SymbolCode.of(raw, opts)      -> the symbol, or null
+//   SymbolCode.shapeOk(sym)       -> whether a carried symbol has a symbol's shape ("&" a joiner)
 //   SymbolCode.problem(read, raw) -> the sentence for a null, or null
 //   SymbolCode.index(raw)         -> { code: 'GSPC.INDX' } | { foreign: 'GSPC.US', base: 'GSPC' } | { code: null, junk? }
 //   SymbolCode.fromRow(row)       -> a search row's symbol ('IBM' on NYSE -> IBM.US)
@@ -563,14 +564,71 @@
   // A refused key or a spent day where a host's own panel says it (the open
   // apps' frame): the words point to the panel and name neither. Read through RateLimitWait when it is there, else
   // off Entitlement -- both optional in the apps this file goes into.
+  // Only while the host's panel is up and says it (RateLimitWait.hostSaysKey):
+  // a pointer with no panel above pointed at nothing.
   function underPanel(status, unreadable) {
     const s = Number(status) || 0;
     if (unreadable || (s !== 401 && s !== 402)) return false;
     const R = typeof window !== 'undefined' ? window.RateLimitWait : null;
-    if (R && typeof R.hostPanel === 'function') return Boolean(R.hostPanel());
+    if (R && typeof R.hostSaysKey === 'function') return Boolean(R.hostSaysKey({ status: s }));
     const E = typeof window !== 'undefined' ? window.Entitlement : null;
-    return Boolean(E && typeof E.problem === 'function');
+    if (!E || typeof E.problem !== 'function') return false;
+    try {
+      const p = E.problem();
+      if (p && Number(p.status) === s) return true;
+      return s === 402 && typeof E.anyDenied === 'function' && Boolean(E.anyDenied());
+    } catch (_) {
+      return false;
+    }
   }
+  // A line whose words depend on the host's panel when it is drawn: a
+  // refused key or a spent day points to the panel while it is up, and is
+  // named once it has gone. Kept as how to say it, never as the words of the
+  // moment the request failed -- those went on pointing at a panel that had
+  // gone (a search refused for the key, its panel cleared). words() draws a
+  // late line or plain words alike.
+  function late(say) { return { late: say }; }
+  function words(note) { return note && typeof note === 'object' && typeof note.late === 'function' ? note.late() : note; }
+
+  // A ticker search's turns, the same for every picker in every app. Any
+  // change of what the field asks for -- a keystroke, a pick (from the list
+  // or from suggestions kept on screen), Escape, a cleared field, the panel
+  // closed -- starts a new turn at once, not when the typing pause ends. A
+  // request of an older turn is over: its answer and its failure are
+  // dropped (no rows, no line, no list opened), its loading ends with the
+  // turn, and its idle() is true from that moment, so the open apps' shell
+  // says its failure nowhere. The text alone could not tell: AA, AAP, then
+  // AA again took the first AA's late rows for the answer to the third.
+  //   const turns = SymbolCode.searchTurns();    // once per field (a ref)
+  //   const t = turns.next();                    // at each change
+  //   api.searchStocks(key, text, turns.ask(t))  // its request
+  //   if (!turns.live(t)) return;                // an older turn's answer
+  // ask(): the failure of the turn still wanted is the field's own line
+  // (reportsFailure: the open apps' panel waits for that line rather than
+  // say it a second time); idle once the turn is over. The terminal's
+  // client ignores both.
+  function searchTurns() {
+    let n = 0;
+    return {
+      next() { n += 1; return n; },
+      now() { return n; },
+      live(t) { return t === n; },
+      idle(t) { return () => t !== n; },
+      ask(t, more) { return Object.assign({ throwErrors: true, reportsFailure: true, idle: () => t !== n }, more || {}); },
+    };
+  }
+  // A field's turns for a component (a hook): the same turns every render,
+  // and the turn over when the component goes -- a window closed or a screen
+  // left while its search was out (Escape closes Add Position's window
+  // before the field hears it) is used by nobody.
+  function useSearchTurns() {
+    const R = window.React;
+    const ref = R.useRef(null);
+    if (!ref.current) ref.current = searchTurns();
+    R.useEffect(() => () => { ref.current.next(); }, []);
+    return ref.current;
+  }
+
   function failNote(raw, status, unreadable) {
     const s = Number(status) || 0;
     const what = 'Could not check ' + strip(raw).trim().slice(0, 30);
@@ -671,11 +729,11 @@
       // the check, and asking it again at once only fails twice.
       if (rows == null && t.kind === 'listing' && clean(t.search) === t.symbol && searched(t.symbol)) {
         if (limitedNow() || searchFailed === 429) return { symbol: null, reason: 'limited', note: limitNote(limitedNow()) };
-        return { symbol: null, reason: 'failed', note: failNote(raw, searchFailed, searchUnreadable) };
+        return { symbol: null, reason: 'failed', note: late(() => failNote(raw, searchFailed, searchUnreadable)) };
       }
       if (t.kind === 'unknown' || t.kind === 'name') {
         if (rows == null && (limitedNow() || searchFailed === 429)) return { symbol: null, reason: 'limited', note: limitNote(limitedNow()) };
-        if (rows == null) return { symbol: null, reason: 'failed', note: failNote(raw, searchFailed, searchUnreadable) };
+        if (rows == null) return { symbol: null, reason: 'failed', note: late(() => failNote(raw, searchFailed, searchUnreadable)) };
         return none();
       }
       // Typed with its exchange, or a code with none: the listing it names
@@ -691,21 +749,26 @@
         // vouched for it; else a row made from the symbol.
         if (ok === true) return { symbol: want, row: listedRow(want) || rowOf(want, { checked: true }) };
         if (ok === 'limited') return { symbol: null, reason: 'limited', note: limitNote(limitedNow()) };
-        if (ok && ok.failed !== undefined) return { symbol: null, reason: 'failed', note: failNote(raw, ok.failed, ok.unreadable) };
+        if (ok && ok.failed !== undefined) return { symbol: null, reason: 'failed', note: late(() => failNote(raw, ok.failed, ok.unreadable)) };
         return none();
       });
     });
   }
 
   // The calls resolve() makes, through an app's client (window.EODHD_API in
-  // the terminal and in every open app's shell).
-  function apiFor(api, apiKey) {
+  // the terminal and in every open app's shell). `opts.idle`: a function
+  // that says nobody waits for the check any more (a pick or new typing
+  // replaced it): the open apps' shell then says its failure nowhere. The
+  // terminal's client ignores it. The search's failure is the field's own
+  // line (reportsFailure, as searchTurns().ask()).
+  function apiFor(api, apiKey, opts) {
     const A = api || {};
+    const how = opts && typeof opts.idle === 'function' ? { throwErrors: true, idle: opts.idle } : { throwErrors: true };
     return {
-      search: (text) => A.searchStocks(apiKey, text, { throwErrors: true }),
+      search: (text) => A.searchStocks(apiKey, text, Object.assign({ reportsFailure: true }, how)),
       // throwErrors: a failure throws with its status, so a 404 (no such
       // code) is told from a 500 or a dropped connection (nothing known).
-      quote: (symbol) => A.getRealTimeData(apiKey, symbol, { throwErrors: true }),
+      quote: (symbol) => A.getRealTimeData(apiKey, symbol, how),
       limited: () => {
         let u = 0;
         try { u = typeof A.rateLimitedUntil === 'function' ? Number(A.rateLimitedUntil()) || 0 : 0; } catch (_) { u = 0; }
@@ -725,9 +788,11 @@
   // row, or one made from the symbol).
   // o.failed(query): true when the screen's search for this text failed --
   // its empty list is then no answer, and resolve() asks the search again.
+  // ctx.idle (useComboboxKeys): the check is over once a pick, Escape or
+  // new typing replaced it (apiFor).
   function forPicker(api, apiKey, o) {
     const opts = o || {};
-    return (query, rows) => resolve(query, Object.assign(apiFor(api, apiKey), {
+    return (query, rows, ctx) => resolve(query, Object.assign(apiFor(api, apiKey, ctx), {
       rows: opts.failed && opts.failed(query) ? undefined : rows,
       held: opts.held,
     }))
@@ -809,8 +874,19 @@
     return stop;
   }
 
+  // Whether a symbol the app carries (an address, a saved list) has the
+  // shape of one: letters, digits, ^ = _ - and the dot, 30 at most, the
+  // first no dot or dash -- the backend's ticker rule -- with "&" as a
+  // joiner inside a code (M&M.NSE, J&KBANK.NSE): never first, last or
+  // doubled, never beside the dot. The shape only: whether a listing
+  // exists is listed()'s answer.
+  function shapeOk(sym) {
+    const s = String(sym == null ? '' : sym);
+    return /^[A-Za-z0-9^=_][A-Za-z0-9.\-^=_&]{0,29}$/.test(s) && !/&&|&\.|\.&|&$/.test(s);
+  }
+
   // For tests: forget what the checks said.
   function forgetListed() { listedKept.clear(); listedRows.clear(); }
 
-  window.SymbolCode = { read, of, problem, index, fromRow, bestRow, elsewhere, typedListing, parse, searchText, resolve, listed, listedRow, noteSearch, searched, unlisted, unpriced, strip, apiFor, forPicker, searchDeadline, forgetListed, noneNote, limitNote, failNote, searchFailNote, searchLimited, LIMIT_WORDS, SEARCH_LIMIT_WORDS, didYouMean, pairVenue, venueOf, FIAT, METALS, CRYPTO_QUOTE, US_VENUES, ONE_LETTER_EXCHANGES, EXCHANGES, YAHOO, UNLISTED, SEARCHED, NO_PRICES };
+  window.SymbolCode = { read, of, shapeOk, problem, index, fromRow, bestRow, elsewhere, typedListing, parse, searchText, resolve, listed, listedRow, noteSearch, searched, unlisted, unpriced, strip, apiFor, forPicker, searchTurns, useSearchTurns, late, words, searchDeadline, forgetListed, noneNote, limitNote, failNote, searchFailNote, searchLimited, LIMIT_WORDS, SEARCH_LIMIT_WORDS, didYouMean, pairVenue, venueOf, FIAT, METALS, CRYPTO_QUOTE, US_VENUES, ONE_LETTER_EXCHANGES, EXCHANGES, YAHOO, UNLISTED, SEARCHED, NO_PRICES };
 })();

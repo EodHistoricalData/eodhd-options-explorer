@@ -312,24 +312,55 @@ window.RateLimitWait = (function () {
   }
 
   // Whether a host's own panel above the screens (the open apps' frame)
-  // says this failure: the key refused (401) or the day's requests spent
-  // (402) -- always, wherever the host has a panel. A line naming it beside
-  // the panel was a second message about one failure -- the calendar's
-  // company names at 401. It was read off what the panel said at the
-  // moment, and the line put the key's own reason back as soon as another
-  // feed's answer took the panel down: "Market hours did not load: EODHD did
-  // not accept the API key (401)." under the map, the page moving 200 px.
-  // The host keeps its panel up until a request of
-  // the same kind is served with that key; the lines never say the key's or
-  // the day's reason there. The terminal has no such panel, and its lines
-  // say it. A 403 and EODHD's errors are the lines' to say as before.
+  // says this failure now: the key refused (401) or the day's requests
+  // spent (402). A line naming it beside the panel was a second message
+  // about one failure -- the calendar's company names at 401. While the
+  // panel says it, a line points to it ("<What> did not load. See the panel
+  // above.") or stays out, and never says the key's or the day's reason:
+  // when a line went back to its own reason as another feed's answer took
+  // the panel down, the page moved 200 px under the map. The host keeps the
+  // panel up now while a line points at it, until a request of the same
+  // kind is served with that key; no other answer takes it down.
+  //
+  // Only while the panel is up: a pointer with no panel above it pointed at
+  // nothing. The portfolio's US10Y refused on Risk: the panel went on
+  // Overview, where nothing pointed at it and the quotes were served, and
+  // Macro then read "1 of 8 figures did not load. See the panel above."
+  // with no panel and nothing asked again. A line whose failure no panel
+  // says names the reason itself, with its Try again. The host tells of
+  // every change of its panel (Entitlement.subscribe), and the lines that
+  // read this draw again on it (useHostPanel). The terminal has no such
+  // panel, and its lines say every failure. A 403 and EODHD's errors are
+  // the lines' to say as before.
   function hostPanel() {
     var E = window.Entitlement;
     return Boolean(E && typeof E.problem === 'function');
   }
+  // What the panel says now: the problem it shows (problem(): a refused
+  // key, 401; a spent day, 402), or a plan's refusal (anyDenied(): a 402
+  // that is not about a limit is the plan's, "not included in this plan").
+  function panelSays(status) {
+    var E = window.Entitlement;
+    try {
+      var p = E.problem();
+      if (p && Number(p.status) === status) return true;
+      return status === 402 && typeof E.anyDenied === 'function' && Boolean(E.anyDenied());
+    } catch (_) {
+      return false;
+    }
+  }
   function hostSaysKey(f) {
     if (!f || f.limited || f.unreadable || (f.status !== 401 && f.status !== 402)) return false;
-    return hostPanel();
+    return hostPanel() && panelSays(f.status);
+  }
+  // Whether the host's panel is up now, saying anything at all (a plan's
+  // refusal, or a problem with a request): a line that sends the reader to
+  // "the panel above" for any failure reads this when it draws, never what
+  // was true when its request failed.
+  function panelUp() {
+    var E = window.Entitlement;
+    if (!E || typeof E.explained !== 'function') return false;
+    try { return Boolean(E.explained()); } catch (_) { return false; }
   }
   // A plan's refusal: a 403 that is not the limit.
   function planRefusal(f) {
@@ -361,10 +392,11 @@ window.RateLimitWait = (function () {
   // the failure, its live announcement and its Try again stayed absent
   // until something else redrew it. The open apps' frame
   // tells of every change through Entitlement.subscribe(); only a change of
-  // what it says of the key (401) or the day (402) draws again, not every
-  // answer. With no Entitlement (the terminal) nothing is subscribed.
+  // what it says of the key (401) or the day (402), or of whether it is up
+  // at all (panelUp), draws again, not every answer. With no Entitlement
+  // (the terminal) nothing is subscribed.
   function hostKeyState() {
-    return (hostSaysKey({ status: 401 }) ? 'k' : '-') + (hostSaysKey({ status: 402 }) ? 'd' : '-');
+    return (hostSaysKey({ status: 401 }) ? 'k' : '-') + (hostSaysKey({ status: 402 }) ? 'd' : '-') + (panelUp() ? 'p' : '-');
   }
   function useHostPanel() {
     var R = window.React;
@@ -767,7 +799,10 @@ window.RateLimitWait = (function () {
     // `partial`: part of a set loaded and the rest did not -- said with its
     // own reason and Try again whatever the host's panel says: the options chain's later pages refused at 401
     // left nine expiries shown as the whole chain.
-    var words = (props.text || failText(props.what, f, Boolean(props.partial))) + (props.extra ? ' ' + props.extra : '');
+    // `text` may be kept as how to say it (SymbolCode.late: { late }),
+    // worded now -- a pointer to the panel only while the panel is up.
+    var said = props.text && typeof props.text === 'object' && typeof props.text.late === 'function' ? props.text.late() : props.text;
+    var words = (said || failText(props.what, f, Boolean(props.partial))) + (props.extra ? ' ' + props.extra : '');
     // A refused key or a spent day the host's panel says already: nothing
     // here (one failure, one message). The terminal draws it as before.
     // `sayPanel`: a card with nothing else in it says "<what> did not load.
@@ -805,7 +840,7 @@ window.RateLimitWait = (function () {
     parseRetryAfter: parseRetryAfter, REACHED: REACHED, UNREADABLE: UNREADABLE, HELD: HELD, OVER: OVER,
     announce: announce, unreadableError: unreadableError, notData: notData, label: label, waitLook: waitLook,
     RetryButton: RetryButton, failure: failure, failText: failText, failReason: failReason, outage: outage, hostSaysKey: hostSaysKey,
-    hostPanel: hostPanel, panelLine: panelLine, DAILY: DAILY, seesPanel: seesPanel,
+    hostPanel: hostPanel, panelUp: panelUp, panelLine: panelLine, DAILY: DAILY, seesPanel: seesPanel,
     useHostPanel: useHostPanel, Reason: Reason,
     setBusy: setBusy, endBusy: endBusy, busyOf: busyOf, useBusy: useBusy,
     useReloadAfterWait: useReloadAfterWait, FailNote: FailNote, RetryAfterWait: RetryAfterWait, JOIN_MS: JOIN_MS, joins: joins, focusOnRetry: focusOnRetry,

@@ -251,8 +251,14 @@
           // drawing one: the portfolio's economic data, served, took the
           // panel off six lines about the refused quotes of the positions,
           // and Macro's own line pointed at nothing. It goes once none does
-          // (said(), look()). One no line has pointed at goes as before.
-          if (mine.pinned && mine.pointed) { if (!mine.settled) mine.settled = Date.now(); return; }
+          // (said(), look()). So does a refusal answered from memory (kept),
+          // pointed at or not: it takes its number as it is asked, before a
+          // request of its kind asked beside it has left, and that one's
+          // success took it away at once -- Macro opened again, the refused
+          // US10Y kept and US30Y served, had no panel over its "1 of 8
+          // figures did not load. See the panel above." One that left and
+          // was refused, with no line pointing, goes as before.
+          if (mine.pinned && (mine.pointed || mine.kept)) { if (!mine.settled) mine.settled = Date.now(); return; }
           settled(k);
         });
         clearKeyWide(capability, sent);
@@ -371,6 +377,8 @@
     // left behind came back as new ones with no line.
     var gone = named[slot];
     if (!before && gone && gone.kind === p.kind && gone.status === p.status) problems[k].seen = gone.seen;
+    // A refusal of the kind standing again: the one set aside is this one.
+    if (p.pinned) delete aside[slot];
     watch();
     notify(capability);
   }
@@ -383,7 +391,58 @@
     var p = problems[k];
     if (!p) return;
     if (p.seen) named[p.slot || k] = { kind: p.kind, status: p.status, seen: p.seen };
+    if (p.pinned) aside[p.slot || k] = p;
     delete problems[k];
+  }
+
+  /**
+   * A refused key or a spent day that went because nothing pointed at it
+   * any more, kept aside by kind of request: a line pointing at it again
+   * puts it back. Risk keeps its refusals for the page and draws them again
+   * on every visit, asking nothing (PortfolioAnalytics' model, 5): back on
+   * Risk, "The risk-free rate (US10Y) did not load. See the panel above."
+   * came with no panel, because Overview, with nothing pointing, had taken
+   * it down and nothing new was asked to bring it back. A line that sends
+   * the reader to the panel has the panel over it, whatever was or was
+   * not asked on the way. Not taken away by a success: one already settled
+   * it, and a refused address is still answered from memory (api.js).
+   *
+   * Only the refusal the line points to: one of its feed, kind and status
+   * still standing in the client's memory (EODHD_API._refusalStands) --
+   * one lifted since is let go -- and only while nothing on the page says
+   * a failure of that kind already. A line names its kind, not its feed:
+   * a quotes pointer brought back the key's old refusal of the live quotes
+   * over the spent day of the delayed ones, the panel that was right.
+   */
+  var aside = {};
+  function stands(p) {
+    var api = window.EODHD_API;
+    return Boolean(api && typeof api._refusalStands === 'function' && api._refusalStands(p.capability, p.what, p.status));
+  }
+  // Whether a failure kept now -- a request's or a plan's -- is of this kind.
+  function kindTaken(what) {
+    for (var k in problems) if (has(problems, k) && whatsOf(problems[k]).indexOf(what) !== -1) return true;
+    for (var c in state) if (has(state, c) && state[c].allowed === false && (state[c].whats || []).indexOf(what) !== -1) return true;
+    return false;
+  }
+  function bringBack(lines) {
+    var back = false;
+    for (var slot in aside) {
+      if (!has(aside, slot) || has(problems, slot)) continue;
+      var p = aside[slot];
+      if (!stands(p)) { delete aside[slot]; continue; }
+      if (kindTaken(p.what) || onScreen(whatsOf(p), lines) !== 'points') continue;
+      delete aside[slot];
+      p.settled = Date.now();
+      p.pointed = Date.now();
+      problems[slot] = p;
+      back = true;
+    }
+    return back;
+  }
+  function anyAside() {
+    for (var slot in aside) if (has(aside, slot)) return true;
+    return false;
   }
 
   // What a record carries over from the one it replaces when the cause is
@@ -677,15 +736,18 @@
   }
   function look() {
     lookTimer = null;
-    // A refused key or a spent day served since, that nothing points at now.
+    // A refused key or a spent day set aside that a line points at again,
+    // back; one served since that nothing points at now, set aside.
     var lines = ownLines();
-    var dropped = false;
+    var dropped = bringBack(lines);
     for (var k in problems) {
       if (has(problems, k) && problems[k].settled && gone(problems[k], lines)) { settled(k); dropped = true; }
     }
     if (dropped) notify(null);
     var all = claims();
-    if (!all.length) { unwatch(); lastLook = ''; return; }
+    // Still watched while one is set aside: its line coming back is a
+    // change of the page, and nothing else would tell of it.
+    if (!all.length) { if (!anyAside()) unwatch(); lastLook = ''; return; }
     var now = sign();
     if (now !== lastLook) notify(null);
     // A wait ends by the clock, which no mutation reports: looked at once
@@ -829,6 +891,10 @@
   ];
   function problem() {
     var lines = ownLines();
+    // Read as the page is drawn now: a line pointing at a refusal set aside
+    // has it back before the panel is drawn without it (look() tells the
+    // others when it runs).
+    if (bringBack(lines)) lookSoon(0);
     for (var i = 0; i < ORDER.length; i++) {
       for (var k in problems) {
         var p = problems[k];
@@ -1015,6 +1081,7 @@
     problems = {};
     servedKinds = {};
     named = {};
+    aside = {};
     listeners = [];
     seq = 0;
     served = 0;
